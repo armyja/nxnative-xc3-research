@@ -5734,6 +5734,15 @@ static void texhash_check(void) {
         uint64_t x = t ? (((uint64_t)t.width << 40) ^ ((uint64_t)t.height << 20) ^ (uint64_t)t.pixelFormat ^ ((uint64_t)k << 56)) : ser;
         h ^= x * 1099511628211ull; h *= 1099511628211ull; n++; }
     if (font_slot >= 0) { static int nfont; if (nfont < 300) { nfont++; MLOG("[texhash] F%llu draw #%d binds an R8Unorm font atlas at slot %d (serial %llu)", (unsigned long long)f, ord, font_slot, (unsigned long long)font_ser); } }
+    // Flicker alert: per draw position, remember the font-atlas serial of the last 4 frames; a position
+    // that switches between "font atlas" and "no font atlas" within that window is the A-over-the-head
+    // signature, not a legitimate text animation.
+    { static uint64_t hist[512][4]; static int hpos[512];
+      uint64_t cur = (font_slot >= 0) ? font_ser : 0;
+      int oi = ord & 511, p = hpos[oi];
+      uint64_t prev = hist[oi][(p + 3) & 3];
+      hist[oi][p] = cur; hpos[oi] = (p + 1) & 3;
+      if ((cur == 0) != (prev == 0)) { static int nf; if (nf < 200) { nf++; MLOG("[texhash] F%llu draw #%d font-atlas flicker: %s (serial %llu)", (unsigned long long)f, ord, cur ? "appears" : "disappears", (unsigned long long)(cur ? cur : prev)); } } }
     if (ord < 512) {
         if (n && prev[ord] && prev[ord] != h) MLOG("[texhash] F%llu draw #%d texture shapes changed %#llx -> %#llx (%d textures)", (unsigned long long)f, ord, (unsigned long long)prev[ord], (unsigned long long)h, n);
         prev[ord] = h;
