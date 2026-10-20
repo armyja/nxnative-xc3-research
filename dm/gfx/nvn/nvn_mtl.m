@@ -3744,8 +3744,9 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             {   // DM_NVN_BINDAUDIT=<frame>: the binding that actually ships: handle -> tid -> serial -> final
                 // resource id and texture, taken from the normal tex_fast_rid path (cache hits included).
-                static int bf = -2; if (bf == -2) { const char *e = getenv("DM_NVN_BINDAUDIT"); bf = e && *e ? atoi(e) : -1; }
-                if (bf >= 0 && (long)atomic_load(&g_cur_frame) == bf) { static int n; if (n++ < 4000)
+                static int bf = -2; static uint64_t bs; if (bf == -2) { const char *e = getenv("DM_NVN_BINDAUDIT"); bf = e && *e ? atoi(e) : -1; const char *se = getenv("DM_NVN_BINDAUDIT_SERIAL"); bs = se && *se ? (uint64_t)atoll(se) : 0; }
+                int bser = tid < g_ntreg ? (int)g_treg[tid].t.serial : 0;
+                if ((bf >= 0 && (long)atomic_load(&g_cur_frame) == bf) || (bs && (uint64_t)bser == bs)) { static int n; if (n++ < 8000)
                     MLOG("[bind] F%llu p%llu st%d kind%d reg%d h%#llx tid%d ser%llu rid%#llx %lux%lu f%lu slot%d", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass,
                          nvn_stage, (int)b->kind, reg, (unsigned long long)(reg < 128 ? S.tex[nvn_stage][reg] : 0), tid,
                          (unsigned long long)(tid < g_ntreg ? g_treg[tid].t.serial : 0), (unsigned long long)trid,
