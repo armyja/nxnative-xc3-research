@@ -1761,7 +1761,17 @@ static int tex_cpu_written(uint64_t serial) {
     return r;
 }
 static id<MTLTexture> tex_mtl_(const tex_t *ct);
-static id<MTLTexture> tex_mtl(const tex_t *ct) { AP_B; id<MTLTexture> r = tex_mtl_(ct); AP_E(4); return r; }
+static id<MTLTexture> tex_mtl(const tex_t *ct) { AP_B; id<MTLTexture> r = tex_mtl_(ct); AP_E(4);
+    // DM_NVN_TEXWATCH=serial[,serial...]: log every resolution of these textures with the resulting object
+    // (the draw's real binding, after upload/re-upload), to compare frames where a prompt appears/disappears.
+    { static int init; static uint64_t ws[8]; static int nw;
+      if (!init) { init = 1; const char *e = getenv("DM_NVN_TEXWATCH");
+          for (const char *q = e; q && *q && nw < 8; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) ws[nw++] = (uint64_t)atoll(q); }
+      for (int i = 0; i < nw; i++) if (ct && ct->serial == ws[i])
+          MLOG("[texwatch] F%llu ser=%llu tex=%p %lux%lu fmt %lu", (unsigned long long)atomic_load(&g_cur_frame),
+               (unsigned long long)ct->serial, r, (unsigned long long)(r ? r.width : 0), (unsigned long long)(r ? r.height : 0),
+               (unsigned long long)(r ? r.pixelFormat : 0)); }
+    return r; }
 static uint64_t g_texinfo_ser[8]; static int g_texinfo_n;
 static id<MTLTexture> tex_mtl_(const tex_t *ct) {
     tex_t *t = (tex_t *)ct;
