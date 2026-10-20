@@ -871,9 +871,13 @@ static int cps_here(void) {
 }
 // Snapshot copy-source bytes at encode time into the snapshot ring: the guest may reuse the source before the
 // GPU executes the copy, so the GPU must read the bytes as of this position in the command stream.
-static int cps_snap(const void *src, size_t n, id<MTLBuffer> *out, size_t *off) {
+static void mtl_finish_gpu(void);
+static int cps_snap(uint64_t gsrc, const void *src, size_t n, id<MTLBuffer> *out, size_t *off) {
     if (!cps_here()) return 0;
     if (n > (8u << 20)) { if (g_cps_skip++ < 8) MLOG("[copysnap] F%llu copy of %zu bytes too large to snapshot, GPU reads guest memory", (unsigned long long)dm_guest_frame(), n); return 0; }
+    // Bounded wait: a source with a pending GPU write is drained first, so the CPU bytes are the producer's
+    // result, then snapshotted like any other source. Only the small GPU/mixed set pays the wait.
+    if (pend_cover(gsrc, n) && getenv("DM_NVN_COPYSRC_DRAIN")) { static int nd; if (nd++ < 8) MLOG("[copysrc] F%llu drain for a source with a pending GPU write", (unsigned long long)dm_guest_frame()); mtl_finish_gpu(); }
     size_t need = (size_t)((n + 255ull) & ~255ull);
     if (!g_cps_buf || g_cps_off + need > g_cps_size) {
         if (g_cps_buf) defer_obj_release(g_cps_buf);   // copies already encoded still read the old block: release when this submission completes
@@ -928,7 +932,7 @@ void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
       else if (pkw_rec() && n > (16u << 20)) { g_pkw_over = 1; g_pkw_gap_big++; }   // not in the image: the submission is no longer faithful
       else if (pkw_rec()) { g_pkw_over = 1; g_pkw_gap_over++; } }
     { id<MTLBuffer> sbuf = (__bridge id<MTLBuffer>)sb; size_t soff = (size_t)so;
-      if (cps_snap((const uint8_t *)sbuf.contents + so, (size_t)n, &sbuf, &soff)) {
+      if (cps_snap(src, (const uint8_t *)sbuf.contents + so, (size_t)n, &sbuf, &soff)) {
           enc_b_copy_buffer(blit_buf(0, 0, dst, dst + n), sbuf, soff, (__bridge id<MTLBuffer>)db, dof, n);
           return; } }
     enc_b_copy_buffer(blit_buf(src, src + n, dst, dst + n), (__bridge id<MTLBuffer>)sb, so, (__bridge id<MTLBuffer>)db, dof, n);
