@@ -27,14 +27,43 @@ static class P {
     static int Main(string[] a) {
         bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
+        bool info = Array.IndexOf(a, "--info") >= 0; a = Array.FindAll(a, s => s != "--info");
+        bool noExefs = Array.IndexOf(a, "--no-exefs") >= 0; a = Array.FindAll(a, s => s != "--no-exefs");
         if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>"); return 2; }
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0]);
         if (a[1] == "--aoc") return Aoc(ks, a[2], a[3]);
-        var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
-        Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
-        Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the update NSP");
-        Nca ctrl = Pick(updPkg ?? basePkg, NcaContentType.Control);
+        // XCI (game-card image): the secure partition holds the game, the normal partition its control data. A card
+        // that carries an update lists the base and the update separately, and only the distribution type tells
+        // them apart: the base Program NCA is GameCard, the update one is Download.
+        Nca baseProg, updProg; List<Nca> all;
+        bool card = a[1].EndsWith(".xci", StringComparison.OrdinalIgnoreCase);
+        if (card) {
+            var xci = new Xci(ks, new LocalStorage(a[1], FileAccess.Read));
+            all = OpenXciPartition(ks, xci, XciPartitionType.Secure);
+            try { all.AddRange(OpenXciPartition(ks, xci, XciPartitionType.Normal)); } catch { }   // control data / meta
+            baseProg = Pick(all, NcaContentType.Program, DistributionType.GameCard) ?? Pick(all, NcaContentType.Program);
+            updProg = Pick(all, NcaContentType.Program, DistributionType.Download);
+            if (a[2] != "-") updProg = Pick(OpenNsp(ks, a[2]), NcaContentType.Program);   // an explicit update package wins
+        } else {
+            all = OpenNsp(ks, a[1]);
+            baseProg = Pick(all, NcaContentType.Program);
+            updProg = a[2] == "-" ? null : Pick(OpenNsp(ks, a[2]), NcaContentType.Program);
+        }
+        if (baseProg == null) throw new Exception("no Program NCA in the base NSP");
+        // The control data of the update when there is one: a card with an update carries both copies.
+        Nca ctrl = (updProg != null ? Pick(all, NcaContentType.Control, DistributionType.Download) : null)
+                   ?? Pick(all, NcaContentType.Control);
         Console.WriteLine($"title {baseProg.Header.TitleId:x16}" + (updProg != null ? $", update {updProg.Header.TitleId:x16}" : ""));
+        if (info) {
+            // Version and distribution type separate a base NCA from an update of the same title: a game card that
+            // carries both lists Program 0100...62000 twice, and only these tell them apart.
+            Console.WriteLine($"NCAs: {all.Count}");
+            foreach (Nca n in all) Console.WriteLine($"  {n.Header.ContentType,-12} {n.Header.TitleId:x16} v{n.Header.Version} {n.Header.DistributionType}");
+            Console.WriteLine($"base Program: {baseProg.Header.DistributionType} v{baseProg.Header.Version}");
+            Console.WriteLine($"update Program: {(updProg == null ? "none" : $"v{updProg.Header.Version} {updProg.Header.DistributionType}")}");
+            Console.WriteLine($"control NCA: {(ctrl == null ? "none" : $"{ctrl.Header.TitleId:x16} {ctrl.Header.DistributionType}")}");
+            return 0;
+        }
         string outDir = a[3], cmpDir = a.Length > 4 ? a[4] : null;
         if (ctrl != null) {   // control data (NACP): display version and game name; a raw copy goes to <output dir>/control.nacp for naming the app
             byte[] nacp = Nacp(ctrl);
@@ -46,6 +75,7 @@ static class P {
             else Console.WriteLine("no icon in the control data");
         }
         // Code section: the update's ExeFS is complete; opening it layered over the base gives the same result
+        if (!noExefs) {
         IFileSystem exefs = updProg != null ? baseProg.OpenFileSystemWithPatch(updProg, NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid) : baseProg.OpenFileSystem(NcaSectionType.Code, IntegrityCheckLevel.ErrorOnInvalid);
         Copy(exefs, Path.Combine(outDir, "ExeFS"), null);
         string[] mods = Directory.GetFiles(Path.Combine(outDir, "ExeFS")); Array.Sort(mods, StringComparer.Ordinal);
@@ -53,6 +83,7 @@ static class P {
             if (new FileInfo(p).Length < 0x50) continue;
             byte[] h = new byte[0x50]; using (var f = File.OpenRead(p)) f.ReadExactly(h);
             if (h[0] == 'N' && h[1] == 'S' && h[2] == 'O' && h[3] == '0') Console.WriteLine($"{Path.GetFileName(p)} build id {Convert.ToHexString(h, 0x40, 16).ToLowerInvariant()}");
+        }
         }
         IStorage romfs = updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid) : baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
         // the same RomFS without hash checks, for reading damaged files as they are (--allow-damaged)
@@ -102,6 +133,21 @@ static class P {
         return ncas;
     }
     static Nca Pick(List<Nca> l, NcaContentType t) { foreach (Nca n in l) if (n.Header.ContentType == t) return n; return null; }
+    // The same, restricted to one distribution type: a card that carries an update lists Program <id> twice
+    static Nca Pick(List<Nca> l, NcaContentType t, DistributionType d) { foreach (Nca n in l) if (n.Header.ContentType == t && n.Header.DistributionType == d) return n; return null; }
+
+    // Open one XCI partition and list all NCAs in it (game cards carry no tickets; the NCTL/card keys live in prod.keys)
+    static List<Nca> OpenXciPartition(KeySet ks, Xci xci, XciPartitionType t) {
+        IFileSystem fs = xci.OpenPartition(t);
+        var ncas = new List<Nca>();
+        foreach (DirectoryEntryEx e in fs.EnumerateEntries("*", SearchOptions.Default)) {
+            if (!e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) continue;
+            using var f = new UniqueRef<IFile>();
+            fs.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+            ncas.Add(new Nca(ks, f.Release().AsStorage()));
+        }
+        return ncas;
+    }
 
     // Icon: the control data holds one 256x256 JPEG per language (/icon_<language>.dat). Use the English one (American, then British); if neither exists, take the first in NACP language order
     static readonly string[] IconLangs = { "AmericanEnglish", "BritishEnglish", "Japanese", "French", "German", "LatinAmericanSpanish", "Spanish", "Italian",
