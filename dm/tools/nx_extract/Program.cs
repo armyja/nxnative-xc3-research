@@ -29,7 +29,11 @@ static class P {
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
         bool info = Array.IndexOf(a, "--info") >= 0; a = Array.FindAll(a, s => s != "--info");
         bool noExefs = Array.IndexOf(a, "--no-exefs") >= 0; a = Array.FindAll(a, s => s != "--no-exefs");
-        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>"); return 2; }
+        // --aoc-all <dir>: a card's add-on content has no package of its own, so write each DLC's RomFS to <dir>/<index>
+        int aocAt = Array.IndexOf(a, "--aoc-all");
+        string aocAll = aocAt >= 0 && aocAt + 1 < a.Length ? a[aocAt + 1] : null;
+        if (aocAll != null) a = Array.FindAll(a, s => s != "--aoc-all" && s != aocAll);
+        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp|base.xci> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --aoc-all <aoc dir> <base.xci> - <out dir> [--manifest]"); return 2; }
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0]);
         if (a[1] == "--aoc") return Aoc(ks, a[2], a[3]);
         // XCI (game-card image): the secure partition holds the game, the normal partition its control data. A card
@@ -58,10 +62,26 @@ static class P {
             // Version and distribution type separate a base NCA from an update of the same title: a game card that
             // carries both lists Program 0100...62000 twice, and only these tell them apart.
             Console.WriteLine($"NCAs: {all.Count}");
-            foreach (Nca n in all) Console.WriteLine($"  {n.Header.ContentType,-12} {n.Header.TitleId:x16} v{n.Header.Version} {n.Header.DistributionType}");
+            foreach (Nca n in all) Console.WriteLine($"  {n.Header.ContentType,-12} {n.Header.TitleId:x16} v{n.Header.Version} {n.Header.DistributionType,-9} {n.Header.NcaSize / 1048576.0:F1} MB");
             Console.WriteLine($"base Program: {baseProg.Header.DistributionType} v{baseProg.Header.Version}");
             Console.WriteLine($"update Program: {(updProg == null ? "none" : $"v{updProg.Header.Version} {updProg.Header.DistributionType}")}");
             Console.WriteLine($"control NCA: {(ctrl == null ? "none" : $"{ctrl.Header.TitleId:x16} {ctrl.Header.DistributionType}")}");
+            return 0;
+        }
+        // Add-on content carried by the card: every PublicData NCA is one DLC, written to <aocAll>/<index> where index
+        // is the last hex digit of its title ID (0100...63001 is add-on 1), which is the layout the host mounts.
+        if (aocAll != null) {
+            Directory.CreateDirectory(aocAll);
+            int nAoc = 0;
+            foreach (Nca n in all) {
+                if (n.Header.ContentType != NcaContentType.PublicData) continue;
+                string index = (n.Header.TitleId & 0xF).ToString();
+                string dir = Path.Combine(aocAll, index);
+                Console.WriteLine($"add-on content {n.Header.TitleId:x16} ({n.Header.NcaSize / 1048576.0:F1} MB) -> {dir}");
+                Copy(new RomFsFileSystem(n.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)), dir, null);
+                nAoc++;
+            }
+            if (nAoc == 0) { Console.WriteLine("[RED] the card carries no add-on content"); return 1; }
             return 0;
         }
         string outDir = a[3], cmpDir = a.Length > 4 ? a[4] : null;
