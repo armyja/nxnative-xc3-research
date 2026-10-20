@@ -3744,9 +3744,13 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             {   // DM_NVN_BINDAUDIT=<frame>: the binding that actually ships: handle -> tid -> serial -> final
                 // resource id and texture, taken from the normal tex_fast_rid path (cache hits included).
-                static int bf = -2; static uint64_t bs; if (bf == -2) { const char *e = getenv("DM_NVN_BINDAUDIT"); bf = e && *e ? atoi(e) : -1; const char *se = getenv("DM_NVN_BINDAUDIT_SERIAL"); bs = se && *se ? (uint64_t)atoll(se) : 0; }
+                static int bf = -2; static uint64_t bs, bss[8]; static int nbs; static long br0, br1; if (bf == -2) { const char *e = getenv("DM_NVN_BINDAUDIT"); bf = e && *e ? atoi(e) : -1; const char *se = getenv("DM_NVN_BINDAUDIT_SERIAL"); bs = se && *se ? (uint64_t)atoll(se) : 0;
+                    for (const char *q = se; q && *q && nbs < 8; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) bss[nbs++] = (uint64_t)atoll(q);
+                    const char *re = getenv("DM_NVN_BINDAUDIT_RANGE"); br0 = br1 = 0; if (re && *re) { br0 = atol(re); br1 = strchr(re, '-') ? atol(strchr(re, '-') + 1) : br0; } }
                 int bser = tid < g_ntreg ? (int)g_treg[tid].t.serial : 0;
-                if ((bf >= 0 && (long)atomic_load(&g_cur_frame) == bf) || (bs && (uint64_t)bser == bs)) { static int n; if (n++ < 8000)
+                long cf = (long)atomic_load(&g_cur_frame);
+                int bhit = 0; for (int q = 0; q < nbs; q++) if ((uint64_t)bser == bss[q]) bhit = 1;
+                if ((bf >= 0 && cf == bf) || bhit || (br0 && cf >= br0 && cf <= br1)) { static int n; if (n++ < 8000)
                     MLOG("[bind] F%llu p%llu st%d kind%d reg%d h%#llx tid%d ser%llu rid%#llx %lux%lu f%lu slot%d", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass,
                          nvn_stage, (int)b->kind, reg, (unsigned long long)(reg < 128 ? S.tex[nvn_stage][reg] : 0), tid,
                          (unsigned long long)(tid < g_ntreg ? g_treg[tid].t.serial : 0), (unsigned long long)trid,
@@ -5745,7 +5749,7 @@ static void texids_check(NvProg *pr) {
 // the "A" over the head flicker). Cheap enough to leave on for a whole run.
 static void texhash_check(void) {
     static int on = -1; static uint64_t prev[512], last_frame; static int ord;
-    if (on < 0) { const char *e = getenv("DM_NVN_TEXHASH"); on = e && *e; }
+    if (on < 0) { const char *e = getenv("DM_NVN_TEXHASH"); on = e && *e && strcmp(e, "0") != 0; }
     if (!on) return;
     uint64_t f = atomic_load(&g_cur_frame);
     if (f != last_frame) { last_frame = f; ord = 0; }
@@ -5771,12 +5775,22 @@ static void texhash_check(void) {
     }
     ord++;
 }
+// DM_NVN_DRAWCOUNT=1: one line per frame with the number of draws that reached encoding. A frame whose
+// count drops is a candidate for a draw the host skipped (the UI border / prompt that "disappears").
+static void drawcount_check(void) {
+    static int on = -1; static uint64_t lf; static int n;
+    if (on < 0) { const char *e = getenv("DM_NVN_DRAWCOUNT"); on = e && *e && strcmp(e, "0") != 0; }
+    if (!on) return;
+    uint64_t f = atomic_load(&g_cur_frame);
+    if (f != lf) { if (lf) MLOG("[draws] F%llu draws=%d", (unsigned long long)lf, n); lf = f; n = 0; }
+    n++;
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     gpu_capture_draw(atomic_load(&g_cur_frame));
     vb_overlap_check(di);
     if (!S.prog) { RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
-    vb_dump_check(di, pr); texids_check(pr); texhash_check();
+    vb_dump_check(di, pr); texids_check(pr); texhash_check(); drawcount_check();
     if (g_nubd && g_enc && ubd_conflict(pr, dw, di)) { g_ubd_conflicts++; rp_end(); }   // land the deferred inline updates before this draw (see ubd_conflict)
     if (g_ruler_truth == 0) {   // Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
