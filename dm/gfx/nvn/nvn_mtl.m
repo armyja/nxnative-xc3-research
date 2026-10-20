@@ -5713,7 +5713,7 @@ static void texids_check(NvProg *pr) {
             uint64_t h = S.tex[st][k]; if (!h) continue;
             uint64_t ser = h_ser(h); id obj = serial_get(ser);
             id<MTLTexture> t = [obj isKindOfClass:[NvPkg class]] ? ((NvPkg *)obj)->tex : (id<MTLTexture>)obj;
-            if (!t) { static int nred; if (nred < 100) { nred++; MLOG("[RED] [texids] F%llu o%d %s slot %d handle %#llx serial %llu resolves to no texture (NvPkg tex nil)", (unsigned long long)f, to, st ? "frag" : "vert", k, (unsigned long long)h, (unsigned long long)ser); } }
+            if (!t) { static int nn; if (nn < 100) { nn++; MLOG("[texids] F%llu o%d %s slot %d handle %#llx serial %llu not uploaded yet (tex_mtl creates it at bind; not a draw-time nil)", (unsigned long long)f, to, st ? "frag" : "vert", k, (unsigned long long)h, (unsigned long long)ser); } }
             o += snprintf(buf + o, sizeof buf - o, " %s%d:h%#llx/s%llu/%llux%llu/f%llu", st ? "f" : "v", k,
                           (unsigned long long)h, (unsigned long long)ser, (unsigned long long)(t ? t.width : 0),
                           (unsigned long long)(t ? t.height : 0), (unsigned long long)(t ? t.pixelFormat : 0));
