@@ -5705,6 +5705,7 @@ static void texids_check(NvProg *pr) {
     }
     uint64_t f = atomic_load(&g_cur_frame);
     if ((long)f != want || nlog >= 128) return;
+    static uint64_t tf; static int to; if (f != tf) { tf = f; to = 0; }
     nlog++;
     char buf[2048]; size_t o = 0; buf[0] = 0;
     for (int st = 0; st < 2 && o < sizeof buf - 96; st++)
@@ -5712,11 +5713,13 @@ static void texids_check(NvProg *pr) {
             uint64_t h = S.tex[st][k]; if (!h) continue;
             uint64_t ser = h_ser(h); id obj = serial_get(ser);
             id<MTLTexture> t = [obj isKindOfClass:[NvPkg class]] ? ((NvPkg *)obj)->tex : (id<MTLTexture>)obj;
+            if (!t) { static int nred; if (nred < 100) { nred++; MLOG("[RED] [texids] F%llu o%d %s slot %d handle %#llx serial %llu resolves to no texture (NvPkg tex nil)", (unsigned long long)f, to, st ? "frag" : "vert", k, (unsigned long long)h, (unsigned long long)ser); } }
             o += snprintf(buf + o, sizeof buf - o, " %s%d:h%#llx/s%llu/%llux%llu/f%llu", st ? "f" : "v", k,
                           (unsigned long long)h, (unsigned long long)ser, (unsigned long long)(t ? t.width : 0),
                           (unsigned long long)(t ? t.height : 0), (unsigned long long)(t ? t.pixelFormat : 0));
         }
-    MLOG("[texids] F%llu p%llu d%llu%s", (unsigned long long)f, (unsigned long long)g_stat_pass, (unsigned long long)g_stat_draw, buf);
+    int oo = to++;
+    MLOG("[texids] F%llu o%d p%llu d%llu%s", (unsigned long long)f, oo, (unsigned long long)g_stat_pass, (unsigned long long)g_stat_draw, buf);
 }
 // DM_NVN_TEXHASH=1: a per-frame draw ordinal, hashing the fragment texture set; logs only when the same
 // draw position binds a different set than in the previous frame (the "texture handle changed" signature,
