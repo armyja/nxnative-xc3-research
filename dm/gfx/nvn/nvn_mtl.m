@@ -3742,6 +3742,14 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit(tid, t, (MTLTextureType)b->dtt, &r2); if (v) { t = v; trid = r2; } }
             if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_alpha_red(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_alpha_red
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
+            {   // DM_NVN_BINDAUDIT=<frame>: the binding that actually ships: handle -> tid -> serial -> final
+                // resource id and texture, taken from the normal tex_fast_rid path (cache hits included).
+                static int bf = -2; if (bf == -2) { const char *e = getenv("DM_NVN_BINDAUDIT"); bf = e && *e ? atoi(e) : -1; }
+                if (bf >= 0 && (long)atomic_load(&g_cur_frame) == bf) { static int n; if (n++ < 4000)
+                    MLOG("[bind] F%llu p%llu st%d kind%d reg%d h%#llx tid%d ser%llu rid%#llx %lux%lu f%lu slot%d", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass,
+                         nvn_stage, (int)b->kind, reg, (unsigned long long)(reg < 128 ? S.tex[nvn_stage][reg] : 0), tid,
+                         (unsigned long long)(tid < g_ntreg ? g_treg[tid].t.serial : 0), (unsigned long long)trid,
+                         (unsigned long long)(t ? t.width : 0), (unsigned long long)(t ? t.height : 0), (unsigned long long)(t ? t.pixelFormat : 0), aid); } }
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_IMG) {   // Writable texture: NVN image slot r (BindImages) ↔ D3D u_r
