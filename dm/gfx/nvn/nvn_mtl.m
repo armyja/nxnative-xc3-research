@@ -564,6 +564,9 @@ static void pk_frame(uint64_t f) {
     memset(g_pk_n, 0, sizeof g_pk_n); memset(g_pk_plain, 0, sizeof g_pk_plain); g_pk_frame = f; }
 static int pend_kind_hit(uint64_t a, uint64_t n) { if (g_pend_over) return -1; for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return g_pend_kind[i]; return 0; }
 static int pend_hits(uint64_t a, uint64_t n) { if (g_pend_over) return 1; for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1; return 0; }
+// Bytes of [a, a+n) covered by pending GPU writes of this submission (overlaps may double count; enough to
+// classify a copy source as CPU-provided (0), GPU-produced (all) or mixed (partial)).
+static uint64_t pend_cover(uint64_t a, uint64_t n) { if (g_pend_over) return n; uint64_t c = 0; for (int i = 0; i < g_npend; i++) { uint64_t lo = a > g_pend_lo[i] ? a : g_pend_lo[i], hi = a + n < g_pend_hi[i] ? a + n : g_pend_hi[i]; if (hi > lo) c += hi - lo; } return c > n ? n : c; }
 typedef struct { uint64_t ser; uint16_t level, slice; } zskip_zero;
 static zskip_zero g_zskip_zero[4096]; static int g_zskip_n, g_zskip_count;
 static zskip_zero g_zskip_cand[8]; static uint8_t g_zskip_cand_ok[8];
@@ -884,8 +887,21 @@ static int cps_snap(const void *src, size_t n, id<MTLBuffer> *out, size_t *off) 
       if (f % 300 == 0 && (g_cps_n % 97) < 3) MLOG("[copysnap] F%llu copies snapshotted %llu (%llu bytes), too large %llu", (unsigned long long)f, (unsigned long long)g_cps_n, (unsigned long long)g_cps_bytes, (unsigned long long)g_cps_skip); }
     return 1;
 }
+// DM_NVN_COPYSRC=1: per frame, how many copy sources are CPU-provided (no pending GPU write), GPU-produced
+// (all bytes covered by a pending write) or mixed - the classification the per-source model needs.
+static void copysrc_note(uint64_t src, uint64_t n) {
+    static int on = -1; static uint64_t lf, cpu_n, gpu_n, mix_n, bytes; static uint64_t fc, fg, fm, fb;
+    if (on < 0) { const char *e = getenv("DM_NVN_COPYSRC"); on = e && *e && strcmp(e, "0") != 0; }
+    if (!on) return;
+    uint64_t f = atomic_load(&g_cur_frame);
+    if (f != lf) { if (lf) MLOG("[copysrc] F%llu cpu=%llu gpu=%llu mixed=%llu bytes=%llu", (unsigned long long)lf, (unsigned long long)fc, (unsigned long long)fg, (unsigned long long)fm, (unsigned long long)fb); lf = f; fc = fg = fm = fb = 0; }
+    uint64_t cov = pend_cover(src, n);
+    if (cov == 0) fc++; else if (cov >= n) fg++; else fm++;
+    fb += n;
+}
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     if (g_npend < PEND_MAX) { g_pend_lo[g_npend] = dst; g_pend_hi[g_npend++] = dst + n; } else g_pend_over = 1; if (g_npend) g_pend_kind[g_npend - 1] = 1;
+    copysrc_note(src, n);
     void *sb, *db; uint64_t so, dof;
     // An address outside every memory pool means the game copies from/to memory the host does not know (a pool it
     // already finalized, or a range it never registered). Dying here ended whole sessions over one copy, so report the
