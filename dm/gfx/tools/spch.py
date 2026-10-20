@@ -11,15 +11,19 @@
 #   A ShaderProgram is {program_data offset, count} into the same file; its bytes are an NVSD whose
 #   nvsd_shaders list holds {vertex_xv4_size, fragment_xv4_size, vertex_unk_item_size, fragment_unk_item_size}.
 #
-# Association is purely structural, never by searching for a magic or matching a code length:
+# Association is purely structural. It never uses a code length to choose a control record, and it never looks
+# for a magic; the descriptor's own code sizes advance the xv4 cursor:
 #   xv4 cursor: starts at Slct.xv4_offset, advances by vertex_xv4_size + fragment_xv4_size per program
 #   unk cursor: starts at Slct.unk_item_offset, advances by vertex_unk_item_size + fragment_unk_item_size
 # Each Slct's two walks must land exactly on the ends its own fields declare, corroborated by
 # xv4_total_size / unk_item_total_size, or this module refuses the file. Two programs with identical code
-# lengths still get different windows because no step depends on a code length.
+# lengths still get different windows: the record a stage gets comes from cursor arithmetic alone.
 #
-# Supported layout: one nvsd_shaders entry carrying data (the last one), any earlier entry all zero. Any other
-# arrangement is reported as unsupported rather than guessed at: a variant is never dropped silently.
+# Supported layout: a single nvsd_shaders entry carrying data (the last one), any earlier entry all zero. Any other
+# arrangement is reported as unsupported rather than guessed at: an entry is never dropped silently. The engine
+# writes a leading entry whose fragment sizes equal the last entry's vertex sizes in every verified program, but
+# xc3_lib itself asks "Why is only the last set of shaders used?" (spch.rs, TODO), so that meaning is not
+# established and any non-zero leading entry is refused.
 
 import struct
 
@@ -29,6 +33,7 @@ SLCT = b'SLCT'
 _SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}
 GFX_MAGIC, CS_MAGIC = bytes.fromhex('78563412'), bytes.fromhex('79563412')
 CTL_MAGIC = bytes.fromhex('34127698')
+SUPPORTED_VERSION = 1010   # the only version seen in the verified containers; the layout below is read for it
 
 
 class Unsupported(Exception):
@@ -58,6 +63,11 @@ def shaders(d, label, want=None):
         raise Unsupported(f'{label}: not an SPCH container (first four bytes {d[:4]!r})')
     base = 0
     version = _u32(d, 0x04)
+    # Every container verified so far (the five global .wishp of the Xenoblade 3 v2.2.0 card) is version 1010,
+    # and the field layout below is read for that version only. A different version is refused rather than
+    # parsed with this layout.
+    if version != SUPPORTED_VERSION:
+        raise Unsupported(f'{label}: SPCH version {version} ({version:#x}) is not the supported {SUPPORTED_VERSION}')
     slct_tab, slct_cnt = _pair(d, 0x08, base)   # the Slct offset table, file-absolute
     slct_sec, slct_sec_len = _pair(d, 0x18, base)   # every section offset is file-absolute
     xv4, xv4_len = _pair(d, 0x20, base)
@@ -83,6 +93,11 @@ def shaders(d, label, want=None):
         # Slct: +0x0c unk_strings offset, +0x10 programs count, +0x14 programs offset (both relative to the Slct).
         prog_cnt = _u32(s_at, 0x10)
         prog_off = _u32(s_at, 0x14)
+        # The program table is part of the Slct, which lives inside slct_section: it must fit there, or the
+        # descriptor could borrow the slct_section from beyond this Slct's own section.
+        if s_rel + prog_off + 8 * prog_cnt > slct_sec_len:
+            raise ValueError(f'{label} slct{si}: program table {prog_off:#x}+{8 * prog_cnt:#x} at slct_section+{s_rel:#x} '
+                             f'runs past slct_section ({slct_sec_len:#x})')
         # Slct tail: unk_item_offset, unk_item_total_size, xv4_offset, xv4_total_size (u32 each)
         item_off, item_total = struct.unpack_from('<II', s_at, 0x28)
         xoff, xtotal = struct.unpack_from('<II', s_at, 0x30)
@@ -93,7 +108,7 @@ def shaders(d, label, want=None):
         xcur, ucur = xoff, item_off
         for pi in range(prog_cnt):
             # program records are relative to the Slct itself; their {offset,length} is relative to the Slct too
-            nvsd = _read_nvsd(d, slct_sec + s_rel + prog_off + 8 * pi, slct_sec + s_rel, label, si, pi)
+            nvsd = _read_nvsd(d, slct_sec + s_rel + prog_off + 8 * pi, slct_sec, slct_sec + slct_sec_len, label, si, pi)
             sizes = _program_sizes(nvsd, label, si, pi)
             vx, fx, vu, fu = sizes
             # xv4 side: vertex then fragment
@@ -131,17 +146,20 @@ def shaders(d, label, want=None):
     return out
 
 
-def _read_nvsd(d, at, base, label, si, pi):
-    """The ShaderProgram record at file offset `at` is a {offset,length} pair; its bytes are an NVSD.
+def _read_nvsd(d, at, base, limit, label, si, pi):
+    """The ShaderProgram record at file offset `at` names an NVSD as {offset,length}.
 
-    Like the Slct's own offsets, the ShaderProgram offset is relative to slct_section, not to the file.
+    `base` is the start of slct_section and `limit` its end: the Slct is parsed as a slice of slct_section, so
+    the ShaderProgram offset is relative to slct_section (xc3_lib parses `program_data` with
+    parse_offset32_count32 against that base). Both the record and the payload it names must lie inside
+    slct_section, not merely inside the file.
     """
-    if at + 8 > len(d):
-        raise ValueError(f'{label} slct{si}: program {pi} record at {at:#x} lies outside the file')
+    if at + 8 > limit:
+        raise ValueError(f'{label} slct{si}: program {pi} record at {at:#x} lies outside slct_section (ends {limit:#x})')
     off, cnt = struct.unpack_from('<II', d, at)
     start = base + off
-    if start + cnt > len(d):
-        raise ValueError(f'{label} slct{si} program{pi}: program_data {start:#x}+{cnt:#x} outside the file')
+    if start + cnt > limit:
+        raise ValueError(f'{label} slct{si} program{pi}: program_data {start:#x}+{cnt:#x} runs past slct_section ({limit:#x})')
     return d[start:start + cnt]
 
 
@@ -168,10 +186,11 @@ def _program_sizes(nvsd, label, si, pi):
     # stage at all (vertex_xv4_size and vertex_unk_item_size zero), and the last carries the vertex / fragment
     # pair the Slct's walk consumes. A leading entry that does carry a vertex stage is a variant this parser
     # does not understand, and dropping it silently would lose a shader, so the file is refused instead.
-    for k, (vx, _fx, vu, _fu) in enumerate(entries[:-1]):
-        if vx or vu:
-            raise Unsupported(f'{label} slct{si} program{pi}: nvsd_shaders entry {k} of {cnt} carries a vertex stage '
-                              f'(vertex_xv4_size={vx}, vertex_unk_item_size={vu}); variants are not supported')
+    for k, e in enumerate(entries[:-1]):
+        if any(e):
+            raise Unsupported(f'{label} slct{si} program{pi}: nvsd_shaders entry {k} of {cnt} is not all zero '
+                              f'(vertex_xv4_size={e[0]}, fragment_xv4_size={e[1]}, vertex_unk_item_size={e[2]}, '
+                              f'fragment_unk_item_size={e[3]}); its meaning is not established, so it is not dropped')
     last = entries[-1]
     if not any(last):
         raise Unsupported(f'{label} slct{si} program{pi}: the last nvsd_shaders entry of {cnt} carries no sizes')

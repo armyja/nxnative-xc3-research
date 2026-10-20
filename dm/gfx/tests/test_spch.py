@@ -11,16 +11,19 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../tools'))
 import spch
 
+NVSD_SIZE = 0x80 + 0x14 * 3    # room for up to three nvsd_shaders entries
 GFX = bytes.fromhex('78563412') + bytes(0x50)          # a graphics code area, 0x54 bytes: magic + 0x50
 CS = bytes.fromhex('79563412') + bytes(0x50)           # a compute code area
 
 
-def make_ctl(code_len):
-    """A 2176-byte control record shaped like the real ones: magic, own length at +0x20, code length at +0x704."""
+def make_ctl(code_len, marker=0):
+    """A 2176-byte control record shaped like the real ones: magic, own length at +0x20, code length at +0x704,
+    and a `marker` at +0x100 so records that differ only in identity can be told apart."""
     c = bytearray(2176)
     c[0:4] = bytes.fromhex('34127698')
     struct.pack_into('<I', c, 0x20, 0x880)
     struct.pack_into('<I', c, 0x704, code_len)
+    struct.pack_into('<I', c, 0x100, marker)
     return bytes(c)
 
 
@@ -32,78 +35,165 @@ def _sph(bits):
     return bytes(code)
 
 
-def build(programs, gap=0):
-    """One Slct holding `programs` = [(vs_code|None, ps_code|None, gap_before_control)].
+def build_slct(programs, marker_base=0, gap=0):
+    """One Slct from [(vs_code|None, ps_code|None, gap)]; returns (slct_bytes, code_blob, ctl_blob).
 
-    Returns the container bytes. Every program's vertex/fragment sizes come from the code areas it is given,
-    and the Slct's xv4 / unk windows are the sums of those, so the walks close by construction.
+    Each program's sizes are the code areas it is given, and `marker_base` makes every control record in this
+    Slct distinct from another Slct's, so a test can prove which record a stage actually received.
     """
-    code_blob, ctl_blob = b'', b''
-    entries = []
-    for vs, ps, g in programs:
+    code_blob, ctl_blob, entries = b'', b'', []
+    for n, (vs, ps, g) in enumerate(programs):
         vx, fx = (len(vs) if vs else 0), (len(ps) if ps else 0)
         vu, fu = (len(make_ctl(vx)) if vs else 0), (len(make_ctl(fx)) + g if ps else 0)
         entries.append((vx, fx, vu, fu))
         code_blob += (vs or b'') + (ps or b'')
         if vs:
-            ctl_blob += make_ctl(vx)
+            ctl_blob += make_ctl(vx, marker_base + n)
         if ps:
-            ctl_blob += b'\0' * g + make_ctl(fx)
-    prog_cnt = len(programs)
-    xv4_total, unk_total = len(code_blob), len(ctl_blob)
-
-    # NVSD per program: six zero u32, then {offset,count} and the entry list (5 u32 each)
-    nvsd_list, nvsd_off = [], []
+            ctl_blob += b'\0' * g + make_ctl(fx, marker_base + 100 + n)
+    bodies, cur = b'', 0x48 + 8 * len(programs)
     for (vx, fx, vu, fu) in entries:
-        body = bytearray(0x80)
-        off = 0x80
-        body += struct.pack('<I', 1)                     # unk6 of the only entry
-        body += struct.pack('<4I', vx, fx, vu, fu)
-        struct.pack_into('<II', body, 0x18, off, 1)      # offset first, then count
-        nvsd_list.append(bytes(body))
-    # program records (8 bytes each) then the NVSD bodies, all relative to the Slct
-    rec_area = 0x48
-    data_area = rec_area + 8 * prog_cnt
-    recs, bodies, cur = b'', b'', data_area
-    for n in nvsd_list:
-        recs += struct.pack('<II', cur, len(n))
-        bodies += n
-        cur += len(n)
+        body = bytearray(NVSD_SIZE)                     # header + room for up to three entries
+        struct.pack_into('<II', body, 0x18, 0x80, 1)     # offset of the one entry, then its count
+        struct.pack_into('<5I', body, 0x80, 1, vx, fx, vu, fu)
+        bodies += bytes(body)
+    recs, body_at = b'', cur
+    for e in entries:
+        recs += struct.pack('<II', body_at, NVSD_SIZE)
+        body_at += NVSD_SIZE
     slct = bytearray(0x48)
     slct[0:4] = b'SLCT'
-    struct.pack_into('<I', slct, 0x10, prog_cnt)         # programs count
-    struct.pack_into('<I', slct, 0x14, rec_area)         # programs offset (relative to the Slct)
-    struct.pack_into('<II', slct, 0x28, 0, unk_total)    # unk_item_offset, unk_item_total_size
-    struct.pack_into('<II', slct, 0x30, 0, xv4_total)    # xv4_offset, xv4_total_size
-    slct = bytes(slct) + recs + bodies
+    struct.pack_into('<I', slct, 0x10, len(programs))
+    struct.pack_into('<I', slct, 0x14, 0x48)
+    struct.pack_into('<II', slct, 0x28, 0, len(ctl_blob))
+    struct.pack_into('<II', slct, 0x30, 0, len(code_blob))
+    return bytes(slct) + recs + bodies, code_blob, ctl_blob
 
-    # lay out the file: header, slct table + slct_section, xv4_section, unk_section
-    slct_tab_off = 0x48
-    slct_sec_off = slct_tab_off + 8
-    xv4_off = slct_sec_off + len(slct)
-    unk_off = xv4_off + len(code_blob)
+
+def build(programs, gap=0):
+    """A one-Slct container; the Slct's windows start at 0."""
+    return build_multi([(programs, 0, 0)], gap=gap)
+
+
+def build_multi(slcts, gap=0):
+    """A container of several Slcts: [(programs, xv4_start, unk_start)], each with its own window bases.
+
+    Between consecutive Slcts the xv4 and unk sections may carry padding, so the next Slct's start is greater
+    than the previous one's end: a walk must begin at its own base, not where the previous one stopped.
+    """
+    slct_bytes, code_all, ctl_all, meta = [], b'', b'', []
+    xv4_cursor = unk_cursor = 0
+    for i, (programs, xstart, ustart) in enumerate(slcts):
+        body, code, ctl = build_slct(programs, marker_base=1000 * i, gap=gap)
+        meta.append((body, xstart, ustart, len(code), len(ctl)))
+        if xv4_cursor <= xstart:
+            code_all += b'\0' * (xstart - xv4_cursor)
+            code_all += code
+            xv4_cursor = xstart + len(code)
+        if unk_cursor <= ustart:
+            ctl_all += b'\0' * (ustart - unk_cursor)
+            ctl_all += ctl
+            unk_cursor = ustart + len(ctl)
+    tab_off = 0x48
+    slct_sec_off = tab_off + 8 * len(slcts)
+    off = slct_sec_off
+    table = b''
+    for (body, xs, us, _lc, _lk) in meta:
+        table += struct.pack('<II', off - slct_sec_off, 0)
+        # rewrite the Slct's window bases now that they are known
+        body = bytearray(body)
+        struct.pack_into('<II', body, 0x28, us, len(meta[0][0]) if False else struct.unpack_from('<I', body, 0x2c)[0])
+        struct.pack_into('<I', body, 0x30, xs)
+        table = table[:-8] + struct.pack('<II', off - slct_sec_off, 0)
+        slct_bytes.append(bytes(body))
+        off += len(body)
+    slct_sec = b''.join(slct_bytes)
+    xv4_off = slct_sec_off + len(slct_sec)
+    unk_off = xv4_off + len(code_all)
     hdr = bytearray(0x48)
     hdr[0:4] = b'HCPS'
     struct.pack_into('<I', hdr, 0x04, 1010)
-    struct.pack_into('<II', hdr, 0x08, slct_tab_off, 1)   # Slct table: 1 entry
-    struct.pack_into('<II', hdr, 0x18, slct_sec_off, len(slct))
-    struct.pack_into('<II', hdr, 0x20, xv4_off, len(code_blob))
-    struct.pack_into('<II', hdr, 0x28, unk_off, len(ctl_blob))
-    return bytes(hdr) + struct.pack('<II', 0, 0) + slct + code_blob + ctl_blob
+    struct.pack_into('<II', hdr, 0x08, tab_off, len(slcts))
+    struct.pack_into('<II', hdr, 0x18, slct_sec_off, len(slct_sec))
+    struct.pack_into('<II', hdr, 0x20, xv4_off, len(code_all))
+    struct.pack_into('<II', hdr, 0x28, unk_off, len(ctl_all))
+    return bytes(hdr) + table + slct_sec + code_all + ctl_all
 
 
 class Spch(unittest.TestCase):
     def test_same_code_lengths_are_paired_by_structure(self):
-        # Two programs whose vertex and fragment code are byte-identical and the same length: only the
-        # structural walk can tell them apart, and each must get its own control record.
+        # Three programs with byte-identical vertex and fragment code of the same length, but a different
+        # control marker each. Only the structural walk can tell them apart, so every stage must receive its
+        # own record: a parser that simply took the first control record would fail this.
         vs, ps = _sph(1), _sph(5)
-        out = spch.shaders(build([(vs, ps, 0), (vs, ps, 0)]), 'x')
-        self.assertEqual([(w, s) for w, s, _, _ in out],
-                         [('x#SPCH#0:0:vs@xv4+0x0/unk+0x0', 'vs'), ('x#SPCH#0:0:ps@xv4+0x54/unk+0x880', 'ps'),
-                          ('x#SPCH#0:1:vs@xv4+0xa8/unk+0x1100', 'vs'), ('x#SPCH#0:1:ps@xv4+0xfc/unk+0x1980', 'ps')])
-        self.assertEqual(out[0][2], make_ctl(len(vs)))
-        self.assertEqual(out[2][2], make_ctl(len(vs)))   # the bytes match here; the identity must still differ
-        self.assertNotEqual(out[0][0], out[2][0], 'the identity must not collapse when code and control match')
+        out = spch.shaders(build([(vs, ps, 0), (vs, ps, 0), (vs, ps, 0)]), 'x')
+        self.assertEqual(len(out), 6)
+        self.assertEqual([s for _, s, _, _ in out], ['vs', 'ps', 'vs', 'ps', 'vs', 'ps'])
+        markers = [struct.unpack_from('<I', ctl, 0x100)[0] for _, _, ctl, _ in out]
+        self.assertEqual(markers, [0, 100, 1, 101, 2, 102],
+                         'each stage must get its own record, not the first one three times')
+        for (_, st, ctl, code), want_vs in zip(out, [True, False] * 3):
+            self.assertEqual(code, vs if want_vs else ps)
+            self.assertEqual(ctl, make_ctl(len(code), marker=markers[out.index((_, st, ctl, code))]))
+
+    def test_each_slct_starts_from_its_own_base(self):
+        # Two Slcts whose xv4 and unk windows do not touch: the second starts after a gap, so a walk that
+        # carried on from where the first stopped would read the wrong bytes.
+        vs, ps = _sph(1), _sph(5)
+        d = build_multi([([(vs, ps, 0)], 0, 0), ([(ps, vs, 0)], 0x200, 0x1000)], )
+        out = spch.shaders(d, 'x')
+        self.assertEqual(len(out), 4)
+        labels = [w for w, _, _, _ in out]
+        self.assertIn('@xv4+0x200', labels[2], 'the second Slct must start at its own xv4 base')
+        self.assertIn('@unk+0x1000', labels[2], 'the second Slct must start at its own unk base')
+        # the second Slct's stages carry its own marker space, not the first Slct's
+        self.assertEqual([struct.unpack_from('<I', ctl, 0x100)[0] for _, _, ctl, _ in out],
+                         [0, 100, 1000, 1100])
+        # and their code is the code the second Slct declared (fragment first, then vertex)
+        self.assertEqual(out[2][3], ps)
+        self.assertEqual(out[3][3], vs)
+
+    def test_unknown_version_is_refused(self):
+        d = bytearray(build([(_sph(1), _sph(5), 0)]))
+        struct.pack_into('<I', d, 0x04, 0xdeadbeef)
+        with self.assertRaises(spch.Unsupported) as cm:
+            spch.shaders(bytes(d), 'x')
+        self.assertIn('version', str(cm.exception))
+
+    def test_leading_entry_with_only_fragment_sizes_is_refused(self):
+        # The engine writes (0, fx, 0, fu) before the real entry in every verified program. Its meaning is not
+        # established (xc3_lib: "Why is only the last set of shaders used?"), so it must be refused, not dropped.
+        d = bytearray(build([(_sph(1), _sph(5), 0)]))
+        nvsd = d.index(struct.pack('<II', 0x80, 1))
+        # turn the single entry into two: a leading (0, 0x54, 0, 2176) and the original as the last
+        struct.pack_into('<II', d, nvsd, 0x80, 2)
+        lead = struct.pack('<5I', 0, 0, len(_sph(1)), 0, 2176)
+        d[nvsd + 8:nvsd + 8 + 0x14] = lead
+        with self.assertRaises(spch.Unsupported) as cm:
+            spch.shaders(bytes(d), 'x')
+        self.assertIn('not all zero', str(cm.exception))
+
+    def test_leading_entry_with_a_vertex_stage_is_refused(self):
+        d = bytearray(build([(_sph(1), _sph(5), 0)]))
+        nvsd = d.index(struct.pack('<II', 0x80, 1))
+        struct.pack_into('<II', d, nvsd, 0x80, 2)
+        lead = struct.pack('<5I', 0, len(_sph(1)), len(_sph(5)), 2176, 2176)
+        d[nvsd + 8:nvsd + 8 + 0x14] = lead
+        with self.assertRaises(spch.Unsupported) as cm:
+            spch.shaders(bytes(d), 'x')
+        self.assertIn('not all zero', str(cm.exception))
+
+    def test_payload_past_slct_section_is_refused(self):
+        # A program record that stays inside the file but names its NVSD past the end of slct_section, i.e.
+        # borrowing another section's bytes: refused.
+        d = bytearray(build([(_sph(1), _sph(5), 0)]))
+        rec = struct.unpack_from('<I', d, 0x48)[0] + struct.unpack_from('<I', d, 0x18)[0] + 0x48
+        off = struct.unpack_from('<I', d, rec)[0]
+        slct_len = struct.unpack_from('<I', d, 0x1c)[0]
+        struct.pack_into('<I', d, rec, slct_len + 0x40)     # past slct_section, still inside the file
+        self.assertLess(struct.unpack_from('<I', d, 0x18)[0] + slct_len + 0x40, len(d))
+        with self.assertRaises(ValueError):
+            spch.shaders(bytes(d), 'x')
 
     def test_a_gap_before_a_record_is_not_searched_past(self):
         # The walk puts the fragment record at cursor+vertex_unk_item_size. If padding sits there instead of a

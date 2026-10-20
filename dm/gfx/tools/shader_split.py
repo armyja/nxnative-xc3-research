@@ -334,8 +334,11 @@ def scan_blob(d, label, out):
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
     if d[:4] == b'HCPS':                       # Monolith Soft .wishp: the stage pairing comes from the Slct descriptors
+        # Both a layout this parser does not understand and a truncated or inconsistent container stop the run:
+        # a partial package would be a shader set missing stages without saying so.
         try: out.extend(spch.shaders(d, label, STAGES))
-        except spch.Unsupported as e: red(str(e))
+        except spch.Unsupported as e: red(f'{label} (SPCH): {e}')
+        except ValueError as e: red(f'{label} (SPCH): {e}')
         return
     for m in re.finditer(b'BNSH\0\0\0\0', d):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
