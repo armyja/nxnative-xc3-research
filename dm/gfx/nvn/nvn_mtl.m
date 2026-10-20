@@ -5727,11 +5727,13 @@ static void texhash_check(void) {
     if (!on) return;
     uint64_t f = atomic_load(&g_cur_frame);
     if (f != last_frame) { last_frame = f; ord = 0; }
-    uint64_t h = 1469598103934665603ull; int n = 0;
+    uint64_t h = 1469598103934665603ull; int n = 0, font_slot = -1; uint64_t font_ser = 0;
     for (int k = 0; k < 32; k++) { uint64_t ser = S.tex[1][k] ? h_ser(S.tex[1][k]) : 0; if (!ser) continue;
         id obj = serial_get(ser); id<MTLTexture> t = [obj isKindOfClass:[NvPkg class]] ? ((NvPkg *)obj)->tex : (id<MTLTexture>)obj;
+        if (t && t.width >= 256 && t.height >= 128 && t.pixelFormat == MTLPixelFormatR8Unorm && font_slot < 0) { font_slot = k; font_ser = ser; }
         uint64_t x = t ? (((uint64_t)t.width << 40) ^ ((uint64_t)t.height << 20) ^ (uint64_t)t.pixelFormat ^ ((uint64_t)k << 56)) : ser;
         h ^= x * 1099511628211ull; h *= 1099511628211ull; n++; }
+    if (font_slot >= 0) { static int nfont; if (nfont < 300) { nfont++; MLOG("[texhash] F%llu draw #%d binds an R8Unorm font atlas at slot %d (serial %llu)", (unsigned long long)f, ord, font_slot, (unsigned long long)font_ser); } }
     if (ord < 512) {
         if (n && prev[ord] && prev[ord] != h) MLOG("[texhash] F%llu draw #%d texture shapes changed %#llx -> %#llx (%d textures)", (unsigned long long)f, ord, (unsigned long long)prev[ord], (unsigned long long)h, n);
         prev[ord] = h;
