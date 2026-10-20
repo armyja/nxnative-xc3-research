@@ -108,7 +108,10 @@ def shaders(d, label, want=None):
         xcur, ucur = xoff, item_off
         for pi in range(prog_cnt):
             # program records are relative to the Slct itself; their {offset,length} is relative to the Slct too
-            nvsd = _read_nvsd(d, slct_sec + s_rel + prog_off + 8 * pi, slct_sec, slct_sec + slct_sec_len, label, si, pi)
+            # relative_base is this Slct's own start; the bound is still the end of slct_section
+            slct_start = slct_sec + s_rel
+            nvsd = _read_nvsd(d, slct_start + prog_off + 8 * pi, slct_start,
+                              slct_sec + slct_sec_len, label, si, pi)
             sizes = _program_sizes(nvsd, label, si, pi)
             vx, fx, vu, fu = sizes
             # xv4 side: vertex then fragment
@@ -146,20 +149,27 @@ def shaders(d, label, want=None):
     return out
 
 
-def _read_nvsd(d, at, base, limit, label, si, pi):
+def _read_nvsd(d, at, relative_base, section_end, label, si, pi):
     """The ShaderProgram record at file offset `at` names an NVSD as {offset,length}.
 
-    `base` is the start of slct_section and `limit` its end: the Slct is parsed as a slice of slct_section, so
-    the ShaderProgram offset is relative to slct_section (xc3_lib parses `program_data` with
-    parse_offset32_count32 against that base). Both the record and the payload it names must lie inside
-    slct_section, not merely inside the file.
+    Two different things, deliberately separate:
+      * `relative_base` is where the ShaderProgram offset is measured from. xc3_lib's SlctOffset::read_slct
+        slices slct_section at the Slct's offset and parses a Cursor over that slice (spch.rs), and Slct's
+        `programs` uses parse_count32_offset32 with no `args` override, so parse_vec seeks to
+        offset + FilePtrArgs::default().offset = the raw offset. The zero point is therefore the **Slct start**,
+        not the start of slct_section.
+      * `section_end` is the last byte the data may occupy. The Slct, its program table and the NVSD the record
+        names all live inside slct_section, so borrowing bytes from a following section is refused.
+    Using one value for both is what broke this: a section-relative base reads the wrong bytes for any Slct
+    that does not start at the beginning of slct_section.
     """
-    if at + 8 > limit:
-        raise ValueError(f'{label} slct{si}: program {pi} record at {at:#x} lies outside slct_section (ends {limit:#x})')
+    if at + 8 > section_end:
+        raise ValueError(f'{label} slct{si}: program {pi} record at {at:#x} lies past slct_section (ends {section_end:#x})')
     off, cnt = struct.unpack_from('<II', d, at)
-    start = base + off
-    if start + cnt > limit:
-        raise ValueError(f'{label} slct{si} program{pi}: program_data {start:#x}+{cnt:#x} runs past slct_section ({limit:#x})')
+    start = relative_base + off
+    if start < relative_base or start + cnt > section_end:
+        raise ValueError(f'{label} slct{si} program{pi}: program_data {start:#x}+{cnt:#x} runs outside slct_section '
+                         f'[{relative_base:#x}, {section_end:#x})')
     return d[start:start + cnt]
 
 

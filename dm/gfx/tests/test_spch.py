@@ -85,26 +85,21 @@ def build_multi(slcts, gap=0):
     xv4_cursor = unk_cursor = 0
     for i, (programs, xstart, ustart) in enumerate(slcts):
         body, code, ctl = build_slct(programs, marker_base=1000 * i, gap=gap)
-        meta.append((body, xstart, ustart, len(code), len(ctl)))
-        if xv4_cursor <= xstart:
-            code_all += b'\0' * (xstart - xv4_cursor)
-            code_all += code
-            xv4_cursor = xstart + len(code)
-        if unk_cursor <= ustart:
-            ctl_all += b'\0' * (ustart - unk_cursor)
-            ctl_all += ctl
-            unk_cursor = ustart + len(ctl)
+        meta.append((bytearray(body), xstart, ustart, len(code), len(ctl)))
+        code_all += b'\0' * (xstart - xv4_cursor) + code
+        xv4_cursor = xstart + len(code)
+        ctl_all += b'\0' * (ustart - unk_cursor) + ctl
+        unk_cursor = ustart + len(ctl)
     tab_off = 0x48
     slct_sec_off = tab_off + 8 * len(slcts)
     off = slct_sec_off
     table = b''
     for (body, xs, us, _lc, _lk) in meta:
-        table += struct.pack('<II', off - slct_sec_off, 0)
-        # rewrite the Slct's window bases now that they are known
-        body = bytearray(body)
-        struct.pack_into('<II', body, 0x28, us, len(meta[0][0]) if False else struct.unpack_from('<I', body, 0x2c)[0])
+        # the Slct's own window bases: xv4_offset at +0x30, unk_item_offset at +0x28
         struct.pack_into('<I', body, 0x30, xs)
-        table = table[:-8] + struct.pack('<II', off - slct_sec_off, 0)
+        struct.pack_into('<I', body, 0x28, us)
+        table += struct.pack('<II', off - slct_sec_off, 0)
+        body[0:0] = b''  # keep the Slct bytes as built
         slct_bytes.append(bytes(body))
         off += len(body)
     slct_sec = b''.join(slct_bytes)
@@ -152,6 +147,36 @@ class Spch(unittest.TestCase):
         # and their code is the code the second Slct declared (fragment first, then vertex)
         self.assertEqual(out[2][3], ps)
         self.assertEqual(out[3][3], vs)
+
+    def test_second_slct_resolves_its_nvsd_from_its_own_start(self):
+        # A real two-Slct container whose second Slct sits at a non-zero offset inside slct_section. The
+        # program record's offset is measured from the Slct's own start (xc3_lib slices slct_section and
+        # parses a Cursor over that slice), so a parser using the section base reads the wrong bytes here.
+        # The two Slcts get distinct code lengths, so the NVSD each must resolve is identifiable by size.
+        # slct0: 2 stages -> xv4 0x108, unk 0x1100; slct1 starts after both, with gaps
+        d = build_multi([([(_sph(1), _sph(5), 0)], 0, 0),
+                         ([(_sph(5), _sph(1), 0), (_sph(1), _sph(1), 0)], 0x200, 0x1800)])
+        slct_sec_off = struct.unpack_from('<I', d, 0x18)[0]
+        table = struct.unpack_from('<I', d, 0x08)[0]
+        rel1 = struct.unpack_from('<I', d, table + 8)[0]
+        self.assertGreater(rel1, 0, 'the second Slct must not sit at the start of slct_section')
+        # and its windows must start where it says, after gaps left by slct0
+        self.assertEqual(struct.unpack_from('<I', d, slct_sec_off + rel1 + 0x30)[0], 0x200)
+        slct1 = slct_sec_off + rel1
+        prog_off = struct.unpack_from('<I', d, slct1 + 0x14)[0]
+        raw, ln = struct.unpack_from('<II', d, slct1 + prog_off)
+        from_slct = bytes(d[slct1 + raw:slct1 + raw + ln])
+        from_section = bytes(d[slct_sec_off + raw:slct_sec_off + raw + ln])
+        self.assertNotEqual(from_slct, from_section, 'the two bases must not name the same bytes in this fixture')
+        got = spch._read_nvsd(d, slct1 + prog_off, slct1, slct_sec_off + struct.unpack_from('<I', d, 0x1c)[0], 'x', 1, 0)
+        self.assertEqual(got, from_slct, 'the NVSD must be read from the Slct-relative base')
+        self.assertNotEqual(got, from_section)
+        out = spch.shaders(d, 'x')
+        stages2 = [x for x in out if '#1:' in x[0]]
+        self.assertEqual(len(stages2), 4, 'both programs of the second Slct must resolve')
+        # the second Slct's first program is (fragment 0x54, vertex 0x54): verify the bytes are its own
+        self.assertEqual(stages2[0][3], _sph(5))
+        self.assertEqual(stages2[1][3], _sph(1))
 
     def test_unknown_version_is_refused(self):
         d = bytearray(build([(_sph(1), _sph(5), 0)]))
