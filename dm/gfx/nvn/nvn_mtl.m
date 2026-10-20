@@ -566,7 +566,9 @@ static int pend_kind_hit(uint64_t a, uint64_t n) { if (g_pend_over) return -1; f
 static int pend_hits(uint64_t a, uint64_t n) { if (g_pend_over) return 1; for (int i = 0; i < g_npend; i++) if (a < g_pend_hi[i] && a + n > g_pend_lo[i]) return 1; return 0; }
 // Bytes of [a, a+n) covered by pending GPU writes of this submission (overlaps may double count; enough to
 // classify a copy source as CPU-provided (0), GPU-produced (all) or mixed (partial)).
-static uint64_t pend_cover(uint64_t a, uint64_t n) { if (g_pend_over) return n; uint64_t c = 0; for (int i = 0; i < g_npend; i++) { uint64_t lo = a > g_pend_lo[i] ? a : g_pend_lo[i], hi = a + n < g_pend_hi[i] ? a + n : g_pend_hi[i]; if (hi > lo) c += hi - lo; } return c > n ? n : c; }
+static uint64_t pend_cover(uint64_t a, uint64_t n) { if (g_pend_over) return n; uint64_t end = a + n, cur = a, cov = 0;
+    for (;;) { uint64_t best = 0; for (int i = 0; i < g_npend; i++) { uint64_t lo = a > g_pend_lo[i] ? a : g_pend_lo[i], hi = a + n < g_pend_hi[i] ? a + n : g_pend_hi[i]; if (lo <= cur && hi > cur && hi > best) best = hi; }
+        if (!best) break; cov += best - cur; cur = best; if (cur >= end) break; } return cov; }   // union of the pending ranges (greedy sweep)
 typedef struct { uint64_t ser; uint16_t level, slice; } zskip_zero;
 static zskip_zero g_zskip_zero[4096]; static int g_zskip_n, g_zskip_count;
 static zskip_zero g_zskip_cand[8]; static uint8_t g_zskip_cand_ok[8];
@@ -875,9 +877,6 @@ static void mtl_finish_gpu(void);
 static int cps_snap(uint64_t gsrc, const void *src, size_t n, id<MTLBuffer> *out, size_t *off) {
     if (!cps_here()) return 0;
     if (n > (8u << 20)) { if (g_cps_skip++ < 8) MLOG("[copysnap] F%llu copy of %zu bytes too large to snapshot, GPU reads guest memory", (unsigned long long)dm_guest_frame(), n); return 0; }
-    // Bounded wait: a source with a pending GPU write is drained first, so the CPU bytes are the producer's
-    // result, then snapshotted like any other source. Only the small GPU/mixed set pays the wait.
-    if (pend_cover(gsrc, n) && getenv("DM_NVN_COPYSRC_DRAIN")) { static int nd; if (nd++ < 8) MLOG("[copysrc] F%llu drain for a source with a pending GPU write", (unsigned long long)dm_guest_frame()); mtl_finish_gpu(); }
     size_t need = (size_t)((n + 255ull) & ~255ull);
     if (!g_cps_buf || g_cps_off + need > g_cps_size) {
         if (g_cps_buf) defer_obj_release(g_cps_buf);   // copies already encoded still read the old block: release when this submission completes
@@ -906,8 +905,8 @@ static void copysrc_note(uint64_t src, uint64_t dst, uint64_t n) {
         (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n, (unsigned long long)cov, pkw_gap()); } }
 }
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
+    copysrc_note(src, dst, n);   // before this copy's own destination joins the pending list
     if (g_npend < PEND_MAX) { g_pend_lo[g_npend] = dst; g_pend_hi[g_npend++] = dst + n; } else g_pend_over = 1; if (g_npend) g_pend_kind[g_npend - 1] = 1;
-    copysrc_note(src, dst, n);
     void *sb, *db; uint64_t so, dof;
     // An address outside every memory pool means the game copies from/to memory the host does not know (a pool it
     // already finalized, or a range it never registered). Dying here ended whole sessions over one copy, so report the
