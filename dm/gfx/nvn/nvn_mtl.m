@@ -526,6 +526,7 @@ static pkw_t g_pkw[PKW_MAX]; static int g_npkw, g_pkw_over;
 // an overflow of the t2b destination list (then "is this range t2b-fed" is unknown, which is not "no"). Reset with the list.
 static uint64_t g_pkw_gap_big, g_pkw_gap_over, g_t2b_over;
 static id<MTLBuffer> g_pkw_buf; static size_t g_pkw_off, g_pkw_size;
+static _Atomic long g_gc_dump_frame;   // DM_NVN_DUMP_CLICK: frame armed by a left click (the next full frame)
 static uint64_t g_pkw_n, g_pkw_bytes;
 static int pkw_gap(void) { return g_pkw_over || g_pkw_gap_big || g_pkw_gap_over || g_t2b_over; }
 static void pkw_apply(uint64_t lo, uint64_t n, uint8_t *out) {
@@ -5628,6 +5629,17 @@ static void vb_overlap_check(const p_draw_idx *di) {
 // The bytes are the guest memory the draw reads, so buffer analysis needs no multi-GB .gputrace.
 static void vb_dump_check(const p_draw_idx *di, NvProg *pr) {
     static int init; static long want = -1; static NSString *dir; static int ndump; static uint64_t total;
+    const char *dc = getenv("DM_NVN_DUMP_CLICK");
+    if (dc && *dc) {
+        long cf = atomic_load(&g_gc_dump_frame);
+        if (cf <= 0) return;
+        uint64_t ff = atomic_load(&g_cur_frame);
+        if ((long)ff > cf) { atomic_store(&g_gc_dump_frame, 0); return; }
+        if ((long)ff != cf) return;
+        if (want != cf) { want = cf; ndump = 0; total = 0;
+            dir = [NSString stringWithUTF8String:dc];
+            [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil]; }
+    }
     if (!init) {
         init = 1; const char *e = getenv("DM_NVN_DUMP");
         if (e && *e) { want = atol(e); const char *c = strchr(e, ':'); if (c && c[1]) { dir = [NSString stringWithUTF8String:c + 1]; [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil]; } }
@@ -7498,13 +7510,17 @@ static void gpu_capture_begin(uint64_t frame, const char *path) {
     else MLOG("GPU capture started at frame %llu draw -> %s", (unsigned long long)frame, path);
 }
 static _Atomic int g_gc_click; static long g_gc_click_frame = -1;
-void mtl_capture_click(void) { if (getenv("MTL_CAPTURE_ENABLED")) atomic_store(&g_gc_click, 1); }   // normal play: a click is only touch input
+void mtl_capture_click(void) { if (getenv("MTL_CAPTURE_ENABLED") || getenv("DM_NVN_DUMP_CLICK")) atomic_store(&g_gc_click, 1); }
 static void gpu_capture_draw(uint64_t frame) {
     if (atomic_exchange(&g_gc_click, 0) && !g_gc_started) {
-        // The click lands while the current frame is already partly drawn; capture the next full frame so the
-        // trace starts at its first draw and contains every draw of the frame, like DM_GPU_CAPTURE does.
-        g_gc_click_frame = (long)atomic_load(&g_cur_frame) + 1;
-        MLOG("GPU capture armed by left click; frame %ld will be captured from its first draw", g_gc_click_frame);
+        const char *dd = getenv("DM_NVN_DUMP_CLICK");
+        if (dd && *dd) { atomic_store(&g_gc_dump_frame, (long)frame + 1); MLOG("DM_NVN_DUMP_CLICK: frame %llu will be dumped (index/vertex buffers) on the next full frame", (unsigned long long)frame + 1); }
+        else {
+            // The click lands while the current frame is already partly drawn; capture the next full frame so the
+            // trace starts at its first draw and contains every draw of the frame, like DM_GPU_CAPTURE does.
+            g_gc_click_frame = (long)atomic_load(&g_cur_frame) + 1;
+            MLOG("GPU capture armed by left click; frame %ld will be captured from its first draw", g_gc_click_frame);
+        }
     }
     if (g_gc_click_frame > 0 && !g_gc_started && frame >= (uint64_t)g_gc_click_frame) {
         const char *o = getenv("DM_GPU_CAPTURE_OUT");
