@@ -889,7 +889,7 @@ static int cps_snap(const void *src, size_t n, id<MTLBuffer> *out, size_t *off) 
 }
 // DM_NVN_COPYSRC=1: per frame, how many copy sources are CPU-provided (no pending GPU write), GPU-produced
 // (all bytes covered by a pending write) or mixed - the classification the per-source model needs.
-static void copysrc_note(uint64_t src, uint64_t n) {
+static void copysrc_note(uint64_t src, uint64_t dst, uint64_t n) {
     static int on = -1; static uint64_t lf, cpu_n, gpu_n, mix_n, bytes; static uint64_t fc, fg, fm, fb;
     if (on < 0) { const char *e = getenv("DM_NVN_COPYSRC"); on = e && *e && strcmp(e, "0") != 0; }
     if (!on) return;
@@ -898,10 +898,12 @@ static void copysrc_note(uint64_t src, uint64_t n) {
     uint64_t cov = pend_cover(src, n);
     if (cov == 0) fc++; else if (cov >= n) fg++; else fm++;
     fb += n;
+    if (cov > 0) { static int nl; if (nl < 300) { nl++; MLOG("[copysrc] F%llu %s src=%#llx dst=%#llx n=%llu cov=%llu journal_gap=%d", (unsigned long long)f, cov >= n ? "gpu" : "mixed",
+        (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n, (unsigned long long)cov, pkw_gap()); } }
 }
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     if (g_npend < PEND_MAX) { g_pend_lo[g_npend] = dst; g_pend_hi[g_npend++] = dst + n; } else g_pend_over = 1; if (g_npend) g_pend_kind[g_npend - 1] = 1;
-    copysrc_note(src, n);
+    copysrc_note(src, dst, n);
     void *sb, *db; uint64_t so, dof;
     // An address outside every memory pool means the game copies from/to memory the host does not know (a pool it
     // already finalized, or a range it never registered). Dying here ended whole sessions over one copy, so report the
