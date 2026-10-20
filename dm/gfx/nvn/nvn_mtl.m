@@ -600,8 +600,10 @@ static int g_ruler_truth = -1, g_ruler_pending;
 static int tbdr_on(void);
 
 static uint64_t g_sub_serial;   // Submission index (used by the parallel precompile's 'predict only once per submission')
+static _Atomic uint64_t g_cur_frame;   // tentative definition; the real one is below
+static void gpu_capture_maybe(uint64_t frame);
 void mtl_sub_begin(void) {
-    mtl_init(); g_sub_serial++; g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; g_rc_npend = 0; g_rc_skip = 0;
+    mtl_init(); gpu_capture_maybe(atomic_load(&g_cur_frame)); g_sub_serial++; g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; g_rc_npend = 0; g_rc_skip = 0;
     if (tbdr_on() == 0 && g_ruler_pending) { g_ruler_truth = 0; g_ruler_pending = 0; MLOG("DM_NVN_RULER: switching to the mode under test"); }
     defer_drain();
     defer_reset();
@@ -5686,12 +5688,33 @@ static void vb_dump_check(const p_draw_idx *di, NvProg *pr) {
     if (m) fclose(m);
     MLOG("DM_NVN_DUMP: frame %llu pass %llu draw %d -> %s_*", (unsigned long long)f, (unsigned long long)g_stat_pass, ndump, base);
 }
+// DM_NVN_TEXIDS=<render frame>: one line per draw with the bound texture handles (vertex and fragment)
+// and the resource each resolves to. For the argument-buffer binding questions (which texture a draw samples).
+static void texids_check(NvProg *pr) {
+    static long want = -1; static int nlog;
+    if (want < 0) { const char *e = getenv("DM_NVN_TEXIDS"); want = e && *e ? atol(e) : 0; }
+    if (!want) return;
+    uint64_t f = atomic_load(&g_cur_frame);
+    if ((long)f != want || nlog >= 128) return;
+    nlog++;
+    char buf[2048]; size_t o = 0; buf[0] = 0;
+    for (int st = 0; st < 2 && o < sizeof buf - 96; st++)
+        for (int k = 0; k < 128 && o < sizeof buf - 96; k++) {
+            uint64_t h = S.tex[st][k]; if (!h) continue;
+            uint64_t ser = h_ser(h); id obj = serial_get(ser);
+            id<MTLTexture> t = [obj isKindOfClass:[NvPkg class]] ? ((NvPkg *)obj)->tex : (id<MTLTexture>)obj;
+            o += snprintf(buf + o, sizeof buf - o, " %s%d:h%#llx/s%llu/%llux%llu/f%llu", st ? "f" : "v", k,
+                          (unsigned long long)h, (unsigned long long)ser, (unsigned long long)(t ? t.width : 0),
+                          (unsigned long long)(t ? t.height : 0), (unsigned long long)(t ? t.pixelFormat : 0));
+        }
+    MLOG("[texids] F%llu p%llu d%llu%s", (unsigned long long)f, (unsigned long long)g_stat_pass, (unsigned long long)g_stat_draw, buf);
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     gpu_capture_draw(atomic_load(&g_cur_frame));
     vb_overlap_check(di);
     if (!S.prog) { RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
-    vb_dump_check(di, pr);
+    vb_dump_check(di, pr); texids_check(pr);
     if (g_nubd && g_enc && ubd_conflict(pr, dw, di)) { g_ubd_conflicts++; rp_end(); }   // land the deferred inline updates before this draw (see ubd_conflict)
     if (g_ruler_truth == 0) {   // Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
@@ -7497,9 +7520,9 @@ static double g_link_it_tin;   // Enqueue time of the frame the display-link cal
 // starts at the frame's first draw (the display link may skip its present) and stops at the first present at or
 // after it, so the frame's commands are inside. A left click in the game window (front_mac.m mtl_capture_click)
 // arms the same capture at the next draw, with the frame appended to DM_GPU_CAPTURE_OUT (or %d substituted).
-static long g_gc_want = -1; static const char *g_gc_out; static int g_gc_started;
+static long g_gc_want = -1; static const char *g_gc_out; static int g_gc_started; static uint64_t g_gc_stop_frame; static int g_gc_done; static long g_gc_frames = 1;
 static void gpu_capture_begin(uint64_t frame, const char *path) {
-    g_gc_started = 1;
+    g_gc_started = 1; g_gc_done = 1; g_gc_stop_frame = frame + (g_gc_frames > 0 ? (uint64_t)g_gc_frames - 1 : 0);
     MTLCaptureManager *cm = [MTLCaptureManager sharedCaptureManager];
     MTLCaptureDescriptor *d = [MTLCaptureDescriptor new];
     d.captureObject = g_dev;
@@ -7507,39 +7530,42 @@ static void gpu_capture_begin(uint64_t frame, const char *path) {
     d.outputURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
     NSError *err = nil;
     if (![cm startCaptureWithDescriptor:d error:&err]) MLOG("[RED] GPU capture start failed: %s", err ? err.description.UTF8String : "?");
-    else MLOG("GPU capture started at frame %llu draw -> %s", (unsigned long long)frame, path);
+    else MLOG("GPU capture started at frame %llu (submission boundary) -> %s", (unsigned long long)frame, path);
 }
 static _Atomic int g_gc_click; static long g_gc_click_frame = -1;
 void mtl_capture_click(void) { if (getenv("MTL_CAPTURE_ENABLED") || getenv("DM_NVN_DUMP_CLICK")) atomic_store(&g_gc_click, 1); }
-static void gpu_capture_draw(uint64_t frame) {
-    if (atomic_exchange(&g_gc_click, 0) && !g_gc_started) {
-        const char *dd = getenv("DM_NVN_DUMP_CLICK");
-        if (dd && *dd) { atomic_store(&g_gc_dump_frame, (long)frame + 1); MLOG("DM_NVN_DUMP_CLICK: frame %llu will be dumped (index/vertex buffers) on the next full frame", (unsigned long long)frame + 1); }
-        else {
-            // The click lands while the current frame is already partly drawn; capture the next full frame so the
-            // trace starts at its first draw and contains every draw of the frame, like DM_GPU_CAPTURE does.
-            g_gc_click_frame = (long)atomic_load(&g_cur_frame) + 1;
-            MLOG("GPU capture armed by left click; frame %ld will be captured from its first draw", g_gc_click_frame);
-        }
-    }
-    if (g_gc_click_frame > 0 && !g_gc_started && frame >= (uint64_t)g_gc_click_frame) {
+// One-shot: start at the first submission of the target frame, so the frame's upload/copy command buffers (and
+// their staging buffers) are inside the trace; stop at the first present at or after the started frame. The old
+// "frame >= want" start restarted it every frame after the stop, so g_gc_done/take keeps it to one capture.
+static void gpu_capture_maybe(uint64_t frame) {
+    if (g_gc_done || g_gc_started) return;
+    if (g_gc_want < 0) { const char *e = getenv("DM_GPU_CAPTURE"); g_gc_want = e && *e ? atol(e) : 0; g_gc_out = getenv("DM_GPU_CAPTURE_OUT"); const char *fn = getenv("DM_GPU_CAPTURE_FRAMES"); g_gc_frames = fn && *fn ? atol(fn) : 1; if (g_gc_frames < 1) g_gc_frames = 1; }
+    if (g_gc_click_frame > 0 && frame >= (uint64_t)g_gc_click_frame) {
         const char *o = getenv("DM_GPU_CAPTURE_OUT");
         char path[1024];
         if (o && strstr(o, "%d")) snprintf(path, sizeof path, o, (int)frame);
         else if (o && *o) snprintf(path, sizeof path, "%s-%llu", o, (unsigned long long)frame);
         else snprintf(path, sizeof path, "%s/cuphead-click-%llu.gputrace", getenv("HOME") ? getenv("HOME") : "/tmp", (unsigned long long)frame);
-        g_gc_want = (long)frame; g_gc_click_frame = -1;
-        MLOG("GPU capture started by left click at frame %llu -> %s", (unsigned long long)frame, path);
+        g_gc_click_frame = -1;
+        MLOG("GPU capture started by left click at frame %llu (submission boundary) -> %s", (unsigned long long)frame, path);
         gpu_capture_begin(frame, path);
         return;
     }
-    if (g_gc_want < 0) { const char *e = getenv("DM_GPU_CAPTURE"); g_gc_want = e && *e ? atol(e) : 0; g_gc_out = getenv("DM_GPU_CAPTURE_OUT"); }
-    if (!g_gc_want || g_gc_started || frame != (uint64_t)g_gc_want) return;
-    char path[1024]; snprintf(path, sizeof path, "%s", g_gc_out && *g_gc_out ? g_gc_out : "cuphead-frame.gputrace");
-    gpu_capture_begin(frame, path);
+    if (g_gc_want > 0 && frame >= (uint64_t)g_gc_want) {
+        char path[1024]; snprintf(path, sizeof path, "%s", g_gc_out && *g_gc_out ? g_gc_out : "cuphead-frame.gputrace");
+        gpu_capture_begin(frame, path);
+    }
+}
+static void gpu_capture_draw(uint64_t frame) {
+    if (atomic_exchange(&g_gc_click, 0) && !g_gc_started) {
+        const char *dd = getenv("DM_NVN_DUMP_CLICK");
+        if (dd && *dd) { atomic_store(&g_gc_dump_frame, (long)frame + 1); MLOG("DM_NVN_DUMP_CLICK: frame %llu will be dumped (index/vertex buffers) on the next full frame", (unsigned long long)frame + 1); }
+        else { g_gc_done = 0; g_gc_click_frame = (long)atomic_load(&g_cur_frame) + 1; MLOG("GPU capture armed by left click; frame %ld will be captured from its first submission", g_gc_click_frame); }
+    }
+    gpu_capture_maybe(frame);
 }
 static void gpu_capture_tick(uint64_t frame) {
-    if (g_gc_started && frame >= (uint64_t)g_gc_want) {
+    if (g_gc_started && frame >= g_gc_stop_frame) {
         g_gc_started = 0;
         [[MTLCaptureManager sharedCaptureManager] stopCapture];
         MLOG("GPU capture stopped at present frame %llu", (unsigned long long)frame);
