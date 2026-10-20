@@ -527,6 +527,7 @@ static pkw_t g_pkw[PKW_MAX]; static int g_npkw, g_pkw_over;
 static uint64_t g_pkw_gap_big, g_pkw_gap_over, g_t2b_over;
 static id<MTLBuffer> g_pkw_buf; static size_t g_pkw_off, g_pkw_size;
 static _Atomic long g_gc_dump_frame;   // DM_NVN_DUMP_CLICK: frame armed by a left click (the next full frame)
+static _Atomic long g_gc_texids_frame;   // DM_NVN_TEXIDS_CLICK: the same for the per-draw texture log
 static uint64_t g_pkw_n, g_pkw_bytes;
 static int pkw_gap(void) { return g_pkw_over || g_pkw_gap_big || g_pkw_gap_over || g_t2b_over; }
 static void pkw_apply(uint64_t lo, uint64_t n, uint8_t *out) {
@@ -5692,8 +5693,16 @@ static void vb_dump_check(const p_draw_idx *di, NvProg *pr) {
 // and the resource each resolves to. For the argument-buffer binding questions (which texture a draw samples).
 static void texids_check(NvProg *pr) {
     static long want = -1; static int nlog;
-    if (want < 0) { const char *e = getenv("DM_NVN_TEXIDS"); want = e && *e ? atol(e) : 0; }
-    if (!want) return;
+    long cf = atomic_load(&g_gc_texids_frame);
+    if (cf > 0) {
+        uint64_t ff = atomic_load(&g_cur_frame);
+        if ((long)ff > cf) { atomic_store(&g_gc_texids_frame, 0); return; }
+        if ((long)ff != cf) return;
+        if (want != cf) { want = cf; nlog = 0; }
+    } else {
+        if (want < 0) { const char *e = getenv("DM_NVN_TEXIDS"); want = e && *e ? atol(e) : 0; }
+        if (!want) return;
+    }
     uint64_t f = atomic_load(&g_cur_frame);
     if ((long)f != want || nlog >= 128) return;
     nlog++;
@@ -7533,7 +7542,7 @@ static void gpu_capture_begin(uint64_t frame, const char *path) {
     else MLOG("GPU capture started at frame %llu (submission boundary) -> %s", (unsigned long long)frame, path);
 }
 static _Atomic int g_gc_click; static long g_gc_click_frame = -1;
-void mtl_capture_click(void) { if (getenv("MTL_CAPTURE_ENABLED") || getenv("DM_NVN_DUMP_CLICK")) atomic_store(&g_gc_click, 1); }
+void mtl_capture_click(void) { if (getenv("MTL_CAPTURE_ENABLED") || getenv("DM_NVN_DUMP_CLICK") || getenv("DM_NVN_TEXIDS_CLICK")) atomic_store(&g_gc_click, 1); }
 // One-shot: start at the first submission of the target frame, so the frame's upload/copy command buffers (and
 // their staging buffers) are inside the trace; stop at the first present at or after the started frame. The old
 // "frame >= want" start restarted it every frame after the stop, so g_gc_done/take keeps it to one capture.
@@ -7558,8 +7567,9 @@ static void gpu_capture_maybe(uint64_t frame) {
 }
 static void gpu_capture_draw(uint64_t frame) {
     if (atomic_exchange(&g_gc_click, 0) && !g_gc_started) {
-        const char *dd = getenv("DM_NVN_DUMP_CLICK");
-        if (dd && *dd) { atomic_store(&g_gc_dump_frame, (long)frame + 1); MLOG("DM_NVN_DUMP_CLICK: frame %llu will be dumped (index/vertex buffers) on the next full frame", (unsigned long long)frame + 1); }
+        const char *dd = getenv("DM_NVN_DUMP_CLICK"), *td = getenv("DM_NVN_TEXIDS_CLICK");
+        if (td && *td) { atomic_store(&g_gc_texids_frame, (long)frame + 1); MLOG("DM_NVN_TEXIDS_CLICK: frame %llu will be logged (per-draw texture handles) on the next full frame", (unsigned long long)frame + 1); }
+        else if (dd && *dd) { atomic_store(&g_gc_dump_frame, (long)frame + 1); MLOG("DM_NVN_DUMP_CLICK: frame %llu will be dumped (index/vertex buffers) on the next full frame", (unsigned long long)frame + 1); }
         else { g_gc_done = 0; g_gc_click_frame = (long)atomic_load(&g_cur_frame) + 1; MLOG("GPU capture armed by left click; frame %ld will be captured from its first submission", g_gc_click_frame); }
     }
     gpu_capture_maybe(frame);
