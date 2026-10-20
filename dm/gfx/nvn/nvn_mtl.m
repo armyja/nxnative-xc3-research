@@ -5718,12 +5718,32 @@ static void texids_check(NvProg *pr) {
         }
     MLOG("[texids] F%llu p%llu d%llu%s", (unsigned long long)f, (unsigned long long)g_stat_pass, (unsigned long long)g_stat_draw, buf);
 }
+// DM_NVN_TEXHASH=1: a per-frame draw ordinal, hashing the fragment texture set; logs only when the same
+// draw position binds a different set than in the previous frame (the "texture handle changed" signature,
+// the "A" over the head flicker). Cheap enough to leave on for a whole run.
+static void texhash_check(void) {
+    static int on = -1; static uint64_t prev[512], last_frame; static int ord;
+    if (on < 0) { const char *e = getenv("DM_NVN_TEXHASH"); on = e && *e; }
+    if (!on) return;
+    uint64_t f = atomic_load(&g_cur_frame);
+    if (f != last_frame) { last_frame = f; ord = 0; }
+    uint64_t h = 1469598103934665603ull; int n = 0;
+    for (int k = 0; k < 32; k++) { uint64_t ser = S.tex[1][k] ? h_ser(S.tex[1][k]) : 0; if (!ser) continue;
+        id obj = serial_get(ser); id<MTLTexture> t = [obj isKindOfClass:[NvPkg class]] ? ((NvPkg *)obj)->tex : (id<MTLTexture>)obj;
+        uint64_t x = t ? (((uint64_t)t.width << 40) ^ ((uint64_t)t.height << 20) ^ (uint64_t)t.pixelFormat ^ ((uint64_t)k << 56)) : ser;
+        h ^= x * 1099511628211ull; h *= 1099511628211ull; n++; }
+    if (ord < 512) {
+        if (n && prev[ord] && prev[ord] != h) MLOG("[texhash] F%llu draw #%d texture shapes changed %#llx -> %#llx (%d textures)", (unsigned long long)f, ord, (unsigned long long)prev[ord], (unsigned long long)h, n);
+        prev[ord] = h;
+    }
+    ord++;
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     gpu_capture_draw(atomic_load(&g_cur_frame));
     vb_overlap_check(di);
     if (!S.prog) { RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
-    vb_dump_check(di, pr); texids_check(pr);
+    vb_dump_check(di, pr); texids_check(pr); texhash_check();
     if (g_nubd && g_enc && ubd_conflict(pr, dw, di)) { g_ubd_conflicts++; rp_end(); }   // land the deferred inline updates before this draw (see ubd_conflict)
     if (g_ruler_truth == 0) {   // Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
         static const char *neg; static int ng = -1; if (ng < 0) { neg = getenv("DM_NVN_RULER_NEG"); ng = neg && *neg; }
