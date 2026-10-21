@@ -8,6 +8,7 @@ totals. Run: python3 dm/gfx/tests/test_spch.py
 import os
 import struct
 import sys
+import tempfile
 import types
 import unittest
 
@@ -344,6 +345,51 @@ class Pairing(unittest.TestCase):
         found = [('a#SPCH#b#SPCH#0:0:0:vs@xv4+0x0/unk+0x0', 'vs', make_ctl(len(_sph(1)), 0), _sph(1)),
                  ('a#SPCH#b#SPCH#0:0:1:ps@xv4+0x54/unk+0x880', 'ps', make_ctl(len(_sph(5)), 1), _sph(5))]
         self.assertEqual(len(self.ss.spch_pairs(found)), 1)
+
+    def _scan_file(self, progs):
+        """Write the container as a real file and run the production entry, not scan_blob directly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'probe.wishp')
+            with open(path, 'wb') as f: f.write(build(progs))
+            return self.ss.scan_file((path, 'rom/probe.wishp'))
+
+    def test_scan_file_reaches_the_spch_parser(self):
+        # The pre-filter in scan_file decides whether a file is scanned at all; an SPCH container must pass it.
+        vs, ps = _sph(1, 0x11), _sph(5, 0x22)
+        rel, keys, pairs, trees = self._scan_file([[vs, ps]])
+        k = self.ss.skey
+        self.assertEqual(len(keys), 2, 'the production entry must extract both stages')
+        self.assertEqual({v[1] for v in keys.values()}, {'vs', 'ps'})
+        self.assertEqual(pairs, {(k(make_ctl(len(vs), 0), vs), k(make_ctl(len(ps), 1), ps))})
+        # the key carries the same bytes the parser produced
+        by_stage = {v[1]: v for v in keys.values()}
+        self.assertEqual(by_stage['vs'][3], vs)
+        self.assertEqual(by_stage['ps'][3], ps)
+
+    def test_scan_file_keeps_a_geometry_chain_but_pairs_nothing(self):
+        vs, gs, ps = _sph(1, 0x11), _sph(4, 0x22), _sph(5, 0x33)
+        rel, keys, pairs, trees = self._scan_file([[vs, gs, ps]])
+        self.assertEqual({v[1] for v in keys.values()}, {'vs', 'gs', 'ps'}, 'every stage keeps its key')
+        self.assertEqual(pairs, set())
+        self.assertEqual({v[3] for v in keys.values()}, {vs, gs, ps})
+
+    def test_scan_file_still_skips_files_it_never_scanned(self):
+        # The pre-filter must keep skipping ordinary files: only the container magics it knows send a file on.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'plain.bin')
+            with open(path, 'wb') as f: f.write(bytes(0x200))
+            rel, keys, pairs, trees = self.ss.scan_file((path, 'rom/plain.bin'))
+            self.assertEqual((rel, keys, pairs, trees), ('rom/plain.bin', {}, set(), {}))
+
+    def test_scan_file_refuses_a_broken_container(self):
+        # A container the parser refuses must stop the run, not come back as an empty success.
+        d = bytearray(build([[_sph(1)]]))
+        struct.pack_into('<I', d, 0x04, 0xdeadbeef)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'probe.wishp')
+            with open(path, 'wb') as f: f.write(bytes(d))
+            with self.assertRaises(SystemExit):
+                self.ss.scan_file((path, 'rom/probe.wishp'))
 
     def test_bnsh_variations_are_unchanged(self):
         # the pre-existing path still pairs by '#var' labels and does not read SPCH ones

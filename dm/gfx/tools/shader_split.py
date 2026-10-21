@@ -440,7 +440,7 @@ def scan_file(args):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d): return rel, {}, set(), {}   # a SARC may hold Yaz0 members
+    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and d[:4] != b'HCPS' and not (d[:4] == b'SARC' and b'Yaz0' in d): return rel, {}, set(), {}   # a SARC may hold Yaz0 members
     else: scan_blob(d, '/' + rel, found)
     return rel, uniq_keys(found), pairs_of(found), trees
 
