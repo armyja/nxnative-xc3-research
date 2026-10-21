@@ -7447,6 +7447,31 @@ static void td_dump(void) {
         MLOG("[texdump] ser=%llu lv=%lu layer %lu format %lu %lux%lu", ser, (unsigned long)lv, (unsigned long)sl, (unsigned long)t.pixelFormat, (unsigned long)w, (unsigned long)h);
         shot(o, path, 0, NULL);
     }
+    // DM_NVN_TEXSAMPLE=serial[,serial...]: sample named bound textures through the same full-screen blit the render
+    // targets above go through, and save each. This is the only correct readback for block-compressed formats: copying
+    // bytes with a 4-byte-per-pixel stride (DM_NVN_TEXRAW) misreads a BC1 texture. The frame is armed by DM_NVN_TEXDUMP.
+    for (const char *q = getenv("DM_NVN_TEXSAMPLE"); q && *q; q = strchr(q, ',') ? strchr(q, ',') + 1 : q + strlen(q)) {
+        uint64_t ser = (uint64_t)atoll(q);
+        id o_ = serial_get(ser);   // the serial table holds the package wrapper, the texture is its ->tex (same unwrap as DM_NVN_TEXRAW)
+        id<MTLTexture> t = [o_ isKindOfClass:[NvPkg class]] ? ((NvPkg *)o_)->tex : o_;
+        if (!t) { MLOG("[texsample] ser=%llu not in the serial table", (unsigned long long)ser); continue; }
+        if (t.textureType != MTLTextureType2D) { MLOG("[texsample] ser=%llu type %lu skipped", (unsigned long long)ser, (unsigned long)t.textureType); continue; }
+        NSUInteger w = t.width, h = t.height;
+        MTLTextureDescriptor *od = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];
+        od.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead; od.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> o = [g_dev newTextureWithDescriptor:od];
+        id<MTLCommandBuffer> cb = q_cb();
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.colorAttachments[0].texture = o; rp.colorAttachments[0].loadAction = MTLLoadActionDontCare; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> en = [cb renderCommandEncoderWithDescriptor:rp];
+        [en setRenderPipelineState:ps]; [en setFragmentTexture:t atIndex:0]; [en setFragmentSamplerState:sp atIndex:0];
+        [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [en endEncoding]; [cb commit]; [cb waitUntilCompleted];
+        char path[1024]; snprintf(path, sizeof path, g_td_path, (int)ser);
+        char *dot = strrchr(path, '.'); char ext[16] = ""; if (dot) { strlcpy(ext, dot, sizeof ext); *dot = 0; }
+        strlcat(path, "_tex", sizeof path); strlcat(path, ext, sizeof path);
+        MLOG("[texsample] ser=%llu %lux%lu format %lu -> %s", (unsigned long long)ser, (unsigned long)w, (unsigned long)h, (unsigned long)t.pixelFormat, path);
+        shot(o, path, 0, NULL);
+    }
     [g_td_list removeAllObjects];
 }
 // DM_NVN_TEXSNAP=in-frame index,... (together with the frame number and path of DM_NVN_TEXDUMP): as soon as these render passes end, copy their color attachments and save them together with the end-of-frame dump
