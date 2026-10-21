@@ -26,7 +26,12 @@
 # Usage: shader_split.py <RomFS dir> <ExeFS main> <output package dir> <output map> <output answer table> [<output pair table>]   (decompressing main needs lz4: run with dm's venv python)   Environment J=concurrency (default 8)
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
-# Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
+# Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program) and of every SPCH program whose
+#   stage chain is exactly vertex + pixel; dmsh_build uses it to give vertex shaders the outputs their pixel shaders
+#   read but they do not write (see dmsh_build.py vs_pad). This is not a general pipeline description: an SPCH program
+#   whose chain runs through a geometry stage is deliberately not paired, because linking its vertex shader straight
+#   to its pixel shader would state a pipeline the container does not have, and the Metal backend encodes only the
+#   vertex and fragment stages (dm/gfx/nvn/nvn_mtl.m takes pr->sh[0] and pr->sh[1])
 import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 import spch   # SPCH ('HCPS') containers, see spch.py
@@ -372,6 +377,49 @@ def var_pairs(found):
         if '#var' in where: var[where][st] = skey(ctl, code)
     return {(v['vs'], v['ps']) for v in var.values() if 'vs' in v and 'ps' in v}
 
+SPCH_LABEL = re.compile(r'(\d+):(\d+):(\d+):(vs|hs|ds|gs|ps|cs)@xv4\+0x[0-9a-f]+/unk\+0x[0-9a-f]+\Z')
+
+def spch_programs(found):
+    """{(file, slct, program): [(entry, stage, key), …]} for the SPCH programs among `found`.
+
+    The identity is carried by the label spch.py writes, and it is validated rather than split loosely: the
+    tail after the last '#SPCH#' must be exactly slct:program:entry:stage@xv4+…/unk+…, so a source file whose
+    own name contains the marker, or any other label, is simply not an SPCH program. A program that repeats a
+    stage is refused: that cannot be a well-formed program and must not collapse into a pair.
+    """
+    progs = collections.defaultdict(dict)
+    for where, st, ctl, code in found:
+        head, sep, tail = where.rpartition('#SPCH#')
+        if not sep: continue
+        m = SPCH_LABEL.match(tail)
+        if not m: continue
+        si, pi, ei, label_stage = m.groups()
+        if label_stage != st: red(f'{where}: the label says {label_stage} but the stage is {st}')
+        slot = progs[(head, si, pi)]
+        if int(ei) in slot: red(f'{where}: entry {ei} appears twice in this program')
+        slot[int(ei)] = (st, skey(ctl, code))
+    out = {}
+    for ident, slot in progs.items():
+        stages = [slot[k] for k in sorted(slot)]
+        if len({s for s, _ in stages}) != len(stages):
+            red(f'{ident[0]} slct {ident[1]} program {ident[2]}: repeated stage in [{" ".join(s for s, _ in stages)}]')
+        out[ident] = [(k, s, v) for k, (s, v) in zip(sorted(slot), stages)]
+    return out
+
+def spch_pairs(found):
+    """(vertex key, pixel key) of each SPCH program whose stage chain is exactly [vs, ps].
+
+    Only that exact chain pairs. A lone vertex or compute program, and a chain that runs through a geometry
+    stage, stay unpaired here: shrinking [vs, gs, ps] to a direct vs/ps pair would describe a pipeline the
+    container does not have.
+    """
+    return {(stages[0][2], stages[1][2]) for stages in spch_programs(found).values()
+            if [s for _, s, _ in stages] == ['vs', 'ps']}
+
+def pairs_of(found):
+    """Every pipeline pair this scan can state: BNSH / Unity variations, and the plain SPCH programs"""
+    return var_pairs(found) | spch_pairs(found)
+
 def scan_file(args):
     """→ (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, or 'defer' (no type tree, scanned again in the second pass)"""
     path, rel = args[:2]
@@ -379,13 +427,13 @@ def scan_file(args):
     found = []; trees = {}
     if head[:8] == IDRK:
         idrk_shaders(path, '/' + rel, found)
-        return rel, uniq_keys(found), var_pairs(found), trees
+        return rel, uniq_keys(found), pairs_of(found), trees
     if len(args) > 2:   # a range of LINKDATA entries (linkdata_jobs)
         linkdata_shaders(path, rel, args[2], found)
-        return rel, uniq_keys(found), var_pairs(found), trees
+        return rel, uniq_keys(found), pairs_of(found), trees
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
         kt_shaders(open(path, 'rb').read(), '/' + rel, found)
-        return rel, uniq_keys(found), var_pairs(found), trees
+        return rel, uniq_keys(found), pairs_of(found), trees
     d = unzs(path) if path.endswith('.zs') else open(path, 'rb').read()
     if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
@@ -394,7 +442,7 @@ def scan_file(args):
         except unityfs.NoTree: return rel, {}, set(), 'defer'
     elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d): return rel, {}, set(), {}   # a SARC may hold Yaz0 members
     else: scan_blob(d, '/' + rel, found)
-    return rel, uniq_keys(found), var_pairs(found), trees
+    return rel, uniq_keys(found), pairs_of(found), trees
 
 def uniq_keys(found):
     uniq = {}
@@ -437,7 +485,7 @@ def main():
             names = sorted(f for f in os.listdir(cap) if f.endswith('.glslc')) if os.path.isdir(cap) else []
             if not names: print(f'[RED] the profile has shader_glslc_capture on, but there are no captured GLSLC outputs in {cap}: the shaders the game compiles at run time will have no translation', flush=True)
             for nm in names: found += glslc_shaders(open(os.path.join(cap, nm), 'rb').read(), f'/glslc_capture/{nm}')
-        results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
+        results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, pairs_of(found), {}))
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
     keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
@@ -501,7 +549,7 @@ def main():
         for k in sorted(facts): f.write(k + '\t' + json.dumps(facts[k], sort_keys=True, separators=(',', ':')) + '\n')
     if pairsout:
         with open(pairsout, 'w') as f:
-            f.write('# kind: evidence  vertex / pixel shader pairs within BNSH variations (generated by dm/gfx/tools/shader_split.py, do not edit): vertex key <TAB> pixel key\n')
+            f.write('# kind: evidence  vertex / pixel shader pairs within BNSH variations and within SPCH programs whose stage chain is exactly vertex + pixel (generated by dm/gfx/tools/shader_split.py, do not edit): vertex key <TAB> pixel key\n')
             for a, b in sorted(pairs): f.write(f'{a}\t{b}\n')
     print(f'shaders: {len(rows)} (' + ', '.join(f'{STAGE_NAME[s]} {n}' for s, n in sorted(stat.items())) + '); sources ' + ', '.join(f'{g} {n}' for g, n in per_src.most_common()) + f'; compute shader answers {len(facts)} rows' + (f'; variation pairs {len(pairs)}' if pairsout else ''))
 
