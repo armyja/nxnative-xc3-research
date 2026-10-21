@@ -3904,8 +3904,16 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         } else if (b->kind == NVN_RB_SBUFP || b->kind == NVN_RB_UBOP) {   // B: storage buffers / compute-stage uniforms are device pointers; the address is taken by NVN slot
             const p_bind_buf *u = reg < 16 ? (b->kind == NVN_RB_UBOP ? &S.ubo[nvn_stage][reg] : &S.ssbo[nvn_stage][reg]) : NULL;
             void *mb; uint64_t mo, gpu;
-            if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { use_rec("buf", u->addr, u->size, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
+            int resolve_success = 0;   // set only in the existing success branch; mb/mo/gpu are never read otherwise
+            if (u && u->addr && mtl_gpu_addr(u->addr, u->size ? u->size : 1, &mb, &mo, &gpu)) { resolve_success = 1; use_rec("buf", u->addr, u->size, 0, NULL); slots[aid] = gpu; USE((__bridge id<MTLBuffer>)mb, b->rw ? MTLResourceUsageRead | MTLResourceUsageWrite : MTLResourceUsageRead); }
             else { slots[aid] = dummy_buf_gpu(); USE(dummy_buf(), MTLResourceUsageRead); }
+            if (g_kd_force && b->kind == NVN_RB_SBUFP)   // final selection actually written into the argument slot; not a GPU-execution or content proof
+                MLOG("[sbuf-final] F%llu p%llu st%d key=%s reg%d aid%d u=%d addr=%#llx rawsize=%llu size=%llu resolved=%d actual=%s slot=%#llx rw=%d",
+                     (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass, nvn_stage, sh->key, reg, aid,
+                     u != NULL, u ? (unsigned long long)u->addr : 0ull, u ? (unsigned long long)u->size : 0ull,
+                     u && u->size ? (unsigned long long)u->size : 1ull, resolve_success,
+                     resolve_success ? "real" : "dummy", (unsigned long long)slots[aid], b->rw);
+            // The old B line's "real" only means u->addr was non-zero (and mtl_gpu_addr was attempted); it is not the final selection.
             if (bl) PD("B %llu st%d sbufp reg%d %s addr=%#llx size=%llu %s", g_stat_pass, nvn_stage, reg, u && u->addr ? "real" : "dummy", u ? (unsigned long long)u->addr : 0ull, u ? (unsigned long long)u->size : 0ull, b->rw ? "rw" : "ro");
         } else if (b->kind == NVN_RB_C1) {      // B: the shader's own constant segment, built when the shader is fetched
             id<MTLBuffer> cb = sh->c1buf ? sh->c1buf : zero_bank();   // c1 has length 0 (600 of them in the whole library) yet the shader still declares it: reads 0
