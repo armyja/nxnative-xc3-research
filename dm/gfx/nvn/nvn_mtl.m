@@ -3848,16 +3848,17 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         } else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TEXU) {
             int tid = b->kind == NVN_RB_TEXU ? (int)(ubo_handle(nvn_stage, reg, b->off) & 0xfffff) : reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
-            if (t && g_fb_n && g_fb_seq == g_draw_seq && nvn_stage == 1) for (int q = 0; q < g_fb_n; q++) if (t == g_fb_src[q]) { t = g_fb_use[q]; trid = g_fb_rid[q]; break; }   // same-pass feedback sampling: read the snapshot instead (see fb_prepare)
+            int tsrc = t != nil, tfb = 0, tfit = 0, tafr = 0, tdummy = 0;   // diagnostic markers only: observe the existing replacements, never change them
+            if (t && g_fb_n && g_fb_seq == g_draw_seq && nvn_stage == 1) for (int q = 0; q < g_fb_n; q++) if (t == g_fb_src[q]) { t = g_fb_use[q]; trid = g_fb_rid[q]; tfb = 1; break; }   // same-pass feedback sampling: read the snapshot instead (see fb_prepare)
             if (t && tid < g_ntreg) use_rec("tex", (uint64_t)g_treg[tid].t.mem, g_treg[tid].t.L.size, tid, &g_treg[tid].t);
             if (t && passdump() && tid < g_ntreg) PD("R %llu st%d ser=%llu", g_stat_pass, nvn_stage, g_treg[tid].t.serial);
             if (bl) PD("B %llu st%d tex reg%d tid=%d %s ser=%llu fmt=%lu %lux%lux%lu view_lv=%lu+%lu view_sl=%lu array=%lu target=%lu swz=%d%d%d%d mtl=%p", g_stat_pass, nvn_stage, reg, tid, t ? "real" : "dummy", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull,
                        (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth,
                        (unsigned long)(t.parentTexture ? t.parentRelativeLevel : 0), (unsigned long)t.mipmapLevelCount,
                        (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType, t ? (int)t.swizzle.red : 0, t ? (int)t.swizzle.green : 0, t ? (int)t.swizzle.blue : 0, t ? (int)t.swizzle.alpha : 0, (__bridge void *)(t.parentTexture ? t.parentTexture : t));
-            if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit(tid, t, (MTLTextureType)b->dtt, &r2); if (v) { t = v; trid = r2; } }
-            if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_alpha_red(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_alpha_red
-            if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
+            if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit(tid, t, (MTLTextureType)b->dtt, &r2); if (v) { t = v; trid = r2; tfit = 1; } }
+            if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_alpha_red(tid, t, &r2); if (v) { t = v; trid = r2; tafr = 1; } }   // see tex_alpha_red
+            if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; tdummy = 1; }
             {   // DM_NVN_BINDAUDIT=<frame>: the binding that actually ships: handle -> tid -> serial -> final
                 // resource id and texture, taken from the normal tex_fast_rid path (cache hits included).
                 static int bf = -2; static uint64_t bs, bss[8]; static int nbs; static long br0, br1; if (bf == -2) { const char *e = getenv("DM_NVN_BINDAUDIT"); bf = e && *e ? atoi(e) : -1; const char *se = getenv("DM_NVN_BINDAUDIT_SERIAL"); bs = se && *se ? (uint64_t)atoll(se) : 0;
@@ -3872,6 +3873,16 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                          (unsigned long long)(tid < g_ntreg ? g_treg[tid].t.serial : 0), (unsigned long long)trid,
                          (unsigned long long)(t ? t.width : 0), (unsigned long long)(t ? t.height : 0), (unsigned long long)(t ? t.pixelFormat : 0), aid); } }
             slots[aid] = trid;
+            // DM_NVN_KEYDUMP only, high-slot textures only: the final selection actually written into the argument slot,
+            // recorded after the feedback/fit/alpha replacements and the dummy fallback. The source serial is the
+            // registered texture's serial (not the final view's identity); actual=real/dummy is defined by the fallback,
+            // never by the final pointer being non-nil (a dummy is non-nil too). Encoding-time state only.
+            if (g_kd_force && b->kind == NVN_RB_TEX && reg >= 16)
+                MLOG("[tex-final] F%llu p%llu st%d key=%s reg%d aid%d tid%d sser=%llu sres=%d fb=%d fit=%d afr=%d fallback=%d actual=%s slot=%#llx fmt=%lu %lux%lux%lu type=%lu",
+                     (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass, nvn_stage, sh->key, reg, aid, tid,
+                     (unsigned long long)(tid < g_ntreg ? g_treg[tid].t.serial : 0), tsrc, tfb, tfit, tafr, tdummy,
+                     tdummy ? "dummy" : "real", (unsigned long long)slots[aid],
+                     (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth, (unsigned long)t.textureType);
             USE(t, MTLResourceUsageRead);
         } else if (b->kind == NVN_RB_IMG) {   // Writable texture: NVN image slot r (BindImages) ↔ D3D u_r
             int tid = reg < 32 ? (int)(S.img[nvn_stage][reg] & 0xfffff) : 0;
