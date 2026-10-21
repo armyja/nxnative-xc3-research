@@ -156,6 +156,8 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         uint64_t base, size, state, perm;
         int k;
         pthread_mutex_lock(&g_map_lock);   // the registry branches read g_map; the other branches are cheap, so the lock simply spans the whole chain
+        // lock order: g_map_lock -> the budget lock (this snapshot). The budget code never takes g_map_lock, and the VM
+        // effect adapters only call mprotect/madvise, so there is no reverse edge; keep it that way if this grows.
         size_t hcur = mb_heap();
         if (a >= g_heap && a < g_heap + hcur) { base=(uint64_t)g_heap; size=hcur; state=5/*Heap*/; perm=3; }
         else if ((k = map_find(addr, 1))) { base=g_map[k-1].base; size=g_map[k-1].size; state=g_map[k-1].state; perm=3; }
