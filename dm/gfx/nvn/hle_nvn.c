@@ -493,10 +493,16 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
 }
 int prog_key_cached(const prog_t *p, unsigned i, uint8_t key[8]) {
     if (!p || i >= p->nstage) return 0;
-    prog_keys_t *k = pk_get(p, 0);            // make = 0: lookup only, never allocates a cache entry
-    if (!k || !(k->ok >> i & 1)) return 0;
-    memcpy(key, k->key[i], 8);
-    return 1;
+    // Lookup only, and the whole lookup+check+copy happens under g_pk_mu: pk_get() would create the dictionary when it
+    // does not exist yet and returns a raw pointer after unlocking, which pk_drop() may free in between.
+    int ok = 0;
+    pthread_mutex_lock(&g_pk_mu);
+    if (g_pk) {
+        prog_keys_t *k = (prog_keys_t *)CFDictionaryGetValue(g_pk, p);
+        if (k && (k->ok >> i & 1)) { memcpy(key, k->key[i], 8); ok = 1; }
+    }
+    pthread_mutex_unlock(&g_pk_mu);
+    return ok;
 }
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;

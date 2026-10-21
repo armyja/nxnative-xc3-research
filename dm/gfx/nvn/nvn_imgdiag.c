@@ -41,11 +41,12 @@ const char *imgdiag_classify(const imgdiag_snapshot *s) {
 
 size_t imgdiag_format(char *buf, size_t n, const imgdiag_snapshot *s, const uint8_t target[8], const char *target_src) {
     size_t o = 0;
-    int w = snprintf(buf, n, "[imgdiag] target=%02x%02x%02x%02x%02x%02x%02x%02x src=%s frame=%llu pass=%llu draw=%llu cmd=%llu "
-                              "keys_cached=%d hit=%d class=%s skipped=%llu\n",
+    int w = snprintf(buf, n, "[imgdiag] target=%02x%02x%02x%02x%02x%02x%02x%02x src=%s frame=%llu pass=%llu "
+                              "match=%llu bindseq=%llu noid=%llu hit=%d class=%s skipped=%llu\n",
                      target[0], target[1], target[2], target[3], target[4], target[5], target[6], target[7],
                      target_src ? target_src : "-", (unsigned long long)s->frame, (unsigned long long)s->pass,
-                     (unsigned long long)s->draw, (unsigned long long)s->cmd, s->keys_cached, s->hit_index,
+                     (unsigned long long)s->match, (unsigned long long)s->bindseq, (unsigned long long)s->noid,
+                     s->hit_index,
                      imgdiag_classify(s), (unsigned long long)imgdiag_skipped());
     if (w < 0 || (size_t)w >= n) return 0;
     o = (size_t)w;

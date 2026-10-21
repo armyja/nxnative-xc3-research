@@ -23,10 +23,11 @@ int main(void) {
     CHECK(!imgdiag_parse_key("", k), "empty rejected");
 
     // 2. arming: default off, invalid disables, valid arms
-    unsetenv("DM_NVN_IMGBIND");
+    unsetenv("DM_NVN_IMGBIND"); imgdiag_reset();
     CHECK(!imgdiag_arm() && !imgdiag_armed(), "off by default");
-    setenv("DM_NVN_IMGBIND", "not-a-key", 1);
-    CHECK(!imgdiag_arm(), "invalid key does not arm");
+    setenv("DM_NVN_IMGBIND", "not-a-key", 1); imgdiag_reset();     // reset, else the earlier decision is cached
+    CHECK(!imgdiag_arm() && !imgdiag_armed(), "invalid key does not arm");
+    CHECK(!imgdiag_arm(), "invalid stays disabled on a second call (decision is latched)");
     imgdiag_reset();
     setenv("DM_NVN_IMGBIND", "4bae5b8abd3bec7f", 1);
     CHECK(imgdiag_arm() && imgdiag_armed(), "valid key arms");
@@ -65,7 +66,7 @@ int main(void) {
     // 7. the record: one buffer, every key and every non-zero slot, and it fits
     memset(&s, 0, sizeof s);
     const char *hex[] = { "aaaaaaaaaaaaaaaa", "4bae5b8abd3bec7f" };
-    keys_of(&s, hex, 2); s.hit_index = 1; s.keys_cached = 1; s.frame = 7; s.pass = 9; s.draw = 1; s.cmd = 3;
+    keys_of(&s, hex, 2); s.hit_index = 1; s.keys_cached = 1; s.frame = 7; s.pass = 9; s.match = 1; s.bindseq = 3;
     s.slot[0].handle = 0xdead; s.slot[0].registered = 1; s.slot[0].fmt = 71; s.slot[0].w = 960; s.slot[0].h = 544;
     s.slot[5].handle = 0xbeef;
     char buf[IMGDIAG_REC];
@@ -78,6 +79,26 @@ int main(void) {
     CHECK(!strstr(buf, "slot 1 "), "zero slots omitted");
     // a buffer too small must be refused rather than truncating into the middle of a record
     CHECK(imgdiag_format(buf, 40, &s, t, "test") == 0, "short buffer refused");
+
+    // 8. full 32 slots and 6 keys must still fit the record, and a short buffer must be refused, not truncated
+    memset(&s, 0, sizeof s);
+    const char *six[] = { "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb", "cccccccccccccccc",
+                          "dddddddddddddddd", "eeeeeeeeeeeeeeee", "4bae5b8abd3bec7f" };
+    keys_of(&s, six, 6); s.hit_index = 5; s.match = 1; s.bindseq = 2; s.noid = 0;
+    for (int i = 0; i < IMGDIAG_SLOTS; i++) {
+        s.slot[i].handle = 0xffffffffffffffffull; s.slot[i].serial = 18446744073709551615ull;
+        s.slot[i].registered = 1; s.slot[i].fmt = 0xffff; s.slot[i].w = s.slot[i].h = s.slot[i].depth = 65535;
+        s.slot[i].type = 255; s.slot[i].write_frame = 18446744073709551615ull; s.slot[i].write_cmd = 18446744073709551615ull;
+        s.slot[i].write_stage = 5; s.slot[i].write_first = 31; s.slot[i].write_count = 32;
+    }
+    n = imgdiag_format(buf, sizeof buf, &s, t, "max");
+    CHECK(n > 0 && n < sizeof buf, "worst case (32 slots, 6 keys, maximum field values) fits");
+    CHECK(!strcmp(imgdiag_classify(&s), "ambiguous"), "32 non-zero slots classify as ambiguous");
+    CHECK(imgdiag_format(buf, 4096, &s, t, "max") == 0, "the old 4096 bound is not enough, and is refused");
+
+    // 9. one-shot: after disarming, the same match must not fire again
+    imgdiag_disarm();
+    CHECK(!imgdiag_armed(), "disarmed after one record");
 
     printf(fails ? "t_imgdiag: %d failure(s)\n" : "t_imgdiag: ok\n", fails);
     return fails != 0;

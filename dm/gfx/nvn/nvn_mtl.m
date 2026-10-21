@@ -5835,11 +5835,11 @@ static void drawcount_check(void) {
 // Chosen and recorded only on the real replay path: OP_DRAW/OP_DRAW_IDX in the replay switch and OP_BIND_IMG split out
 // of the grouped state_op cases. The predictor (pso_predict_rest) and the freeze-check/deferred redraws call state_op
 // or draw() directly and therefore never reach these hooks.
-static uint64_t g_idg_cmd, g_idg_draws;
+static uint64_t g_idg_bindseq, g_idg_matchseq, g_idg_noid;   // image-bind sequence, match sequence, identity-unavailable count
 static void imgdiag_bind(const void *a) {
     if (!imgdiag_arm()) return;
     const p_bind_handles *b = a;
-    imgdiag_note_bind(b->stage, b->first, b->n, atomic_load(&g_cur_frame), ++g_idg_cmd);
+    imgdiag_note_bind(b->stage, b->first, b->n, atomic_load(&g_cur_frame), ++g_idg_bindseq);
 }
 // 1 when the fragment program bound for this draw carries the target key among its shader-data entries. Iterating
 // S.bst[1] is what makes it the fragment source: prog_key's index is the shader-data index, not an NVN stage, and the
@@ -5852,6 +5852,7 @@ static int imgdiag_match(uint8_t keys[IMGDIAG_MAXKEYS][8], int *n, int *hit) {
     uint8_t t[8]; imgdiag_target(t);   // armed above, so t holds the target
     for (unsigned i = 0; i < fp->nstage && *n < IMGDIAG_MAXKEYS; i++)
         if (prog_key_cached(fp, i, keys[*n])) (*n)++;
+    if (*n == 0) { g_idg_noid++; return 0; }   // the program's key cache is not ready: identity unavailable, not "target absent"
     *hit = imgdiag_find_key((const uint8_t (*)[8])keys, *n, t);
     return *hit >= 0;
 }
@@ -5859,7 +5860,8 @@ static void imgdiag_draw(void) {
     uint8_t keys[IMGDIAG_MAXKEYS][8]; int n = 0, hit = -1;
     if (!imgdiag_match(keys, &n, &hit)) return;
     imgdiag_snapshot s; memset(&s, 0, sizeof s);
-    s.frame = atomic_load(&g_cur_frame); s.pass = g_stat_pass; s.draw = ++g_idg_draws; s.cmd = g_idg_cmd;
+    s.frame = atomic_load(&g_cur_frame); s.pass = g_stat_pass; s.match = ++g_idg_matchseq; s.bindseq = g_idg_bindseq;
+    s.noid = g_idg_noid;
     s.nkeys = n; s.keys_cached = 1; s.hit_index = hit; memcpy(s.keys, keys, sizeof keys);
     imgdiag_copy_sources(s.slot);                  // bounded per-slot source metadata (last real OP_BIND_IMG)
     pthread_mutex_lock(&g_rmu);                    // descriptor scalars copied out of the registry; no Metal objects
@@ -5869,7 +5871,8 @@ static void imgdiag_draw(void) {
         s.slot[k].handle = h;
         s.slot[k].serial = h_ser(h);               // pool handle -> serial, the same read-only reader the renderer uses
         int tid = (int)(h & 0xfffff);
-        if (tid > 0 && tid < (1 << 20) && g_treg[tid].ok) {
+        // g_treg is realloc'd and holds g_ntreg entries: 1<<20 is the handle id limit, not the capacity.
+        if (g_treg && tid > 0 && tid < g_ntreg && g_treg[tid].ok) {
             s.slot[k].registered = 1;
             s.slot[k].fmt = (uint32_t)g_treg[tid].t.d.format;
             s.slot[k].w = g_treg[tid].t.d.width; s.slot[k].h = g_treg[tid].t.d.height;
@@ -5877,9 +5880,14 @@ static void imgdiag_draw(void) {
         } else s.slot[k].serial = 0;               // unknown id: raw handle only, descriptor reported unavailable
     }
     pthread_mutex_unlock(&g_rmu);
+    // One shared static buffer, filled completely and written with one log call before disarming, so a failing format
+    // cannot disarm silently: it is reported as a diagnostic error instead (this is one call, not OS-level atomicity).
     static char buf[IMGDIAG_REC];
     uint8_t t[8]; imgdiag_target(t);
-    if (imgdiag_format(buf, sizeof buf, &s, t, "DM_NVN_IMGBIND")) MLOG("%s", buf);   // one call, one buffer
+    size_t len = imgdiag_format(buf, sizeof buf, &s, t, "DM_NVN_IMGBIND");
+    if (len) MLOG("%s", buf);
+    else MLOG("[RED] imgdiag: record of %d slots / %d keys did not fit %d bytes; diagnostic error, nothing usable recorded",
+              IMGDIAG_SLOTS, s.nkeys, IMGDIAG_REC);
     imgdiag_disarm();
 }
 static void imgdiag_draw_skipped(void) {   // the command was skipped by conditional rendering before reaching draw()
@@ -7291,8 +7299,10 @@ void mtl_exec(const uint8_t *p) {
             case OP_DRAW: if (g_rc_skip) { imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); draw(a, NULL); g_exec_next = NULL; break;   // Lookahead start point
             case OP_DRAW_IDX: if (g_rc_skip) { imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); draw(NULL, a); g_exec_next = NULL; break;
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
+            // One case of its own, NOT inside the label chain below: a label chain shares one body, so inserting a case in
+            // the middle makes every earlier label fall into it and run that body with the wrong opcode.
+            case OP_BIND_IMG: imgdiag_bind(a); state_op(h.op, a); break;
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
-            case OP_BIND_IMG: imgdiag_bind(a); state_op(OP_BIND_IMG, a); break;   // split out: the source log must see the real replay only
             case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_STENCIL:
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_BLEND_COLOR: case OP_COPY_STRIDE:
                 state_op(h.op, a); break;

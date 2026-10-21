@@ -7,7 +7,11 @@
 
 #define IMGDIAG_SLOTS   32
 #define IMGDIAG_MAXKEYS  6
-#define IMGDIAG_REC     4096
+// Worst case, computed rather than guessed: a slot line is at most ~210 bytes with every field at its maximum
+// ("[imgdiag] slot 31 handle=0xffffffffffffffff ser=18446744073709551615 reg=1 fmt=0xffff 65535x65535x65535 type=255
+//  lastbind=frame18446744073709551615/cmd18446744073709551615/st5/first31/n32"), 32 of them is ~6720, plus the header
+// (~200) and the keys line (6 x 17 + 8). 8192 leaves margin; the formatter refuses rather than truncating.
+#define IMGDIAG_REC     8192
 
 typedef struct {
     uint64_t handle;      // raw value from S.img[stage][slot]
@@ -19,7 +23,8 @@ typedef struct {
 } imgdiag_slot;
 
 typedef struct {
-    uint64_t frame, pass, draw, cmd;   // replay/guest counters, not claims about GPU execution
+    uint64_t frame, pass;              // guest frame and pass, for orientation only
+    uint64_t match, bindseq, noid;     // diagnostic sequences: matches, image binds, draws whose key cache was not ready
     int nkeys, hit_index, keys_cached; // keys_cached: 0 when the program's key cache was not ready
     uint8_t keys[IMGDIAG_MAXKEYS][8];
     imgdiag_slot slot[IMGDIAG_SLOTS];
