@@ -5,8 +5,8 @@ The case bodies are copied from the production file at generation time (not hand
 switch text changes what is compiled here. Scope: only the label chain and the two draw cases; this is a wiring check,
 not a renderer test.
 """
-import re, subprocess, sys
-SRC = 'dm/gfx/nvn/nvn_mtl.m'
+import os, re, subprocess, sys
+SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'nvn_mtl.m')
 lines = open(SRC).read().splitlines()
 
 def find(pred, what):
