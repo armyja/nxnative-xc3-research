@@ -2372,15 +2372,15 @@ static struct {
 } g_psort;
 
 static void psort_arm(void) {
-    if (g_psort.mode) return;                            // parsed once
-    g_psort.mode = 2;
+    if (g_psort.mode) return;                            // parsed once: 0 unparsed, 1 armed, 2 closed (absent, invalid, or done)
+    g_psort.mode = 2;                                    // absent or unusable stays closed, so getenv is not re-read every pass
     const char *e = getenv("DM_NVN_PSOFAIL_RT");
-    if (!e || !*e) { g_psort.mode = 0; return; }
+    if (!e || !*e) return;
     size_t n = strlen(e);
-    if (n != 16) { MLOG("DM_NVN_PSOFAIL_RT: expected a complete 16-hex fragment key, got %zu characters: disabled", n); return; }
+    if (n != 16) { MLOG("DM_NVN_PSOFAIL_RT: expected a complete 16-hex fragment key, got %zu characters (lowercase hex only): disabled", n); return; }
     for (size_t i = 0; i < n; i++)
         if (!((e[i] >= '0' && e[i] <= '9') || (e[i] >= 'a' && e[i] <= 'f'))) {
-            MLOG("DM_NVN_PSOFAIL_RT: character %zu is not lowercase hex: disabled", i); return; }
+            MLOG("DM_NVN_PSOFAIL_RT: character %zu is not lowercase hex (only 0-9a-f accepted): disabled", i); return; }
     memcpy(g_psort.key, e, n); g_psort.key[n] = 0; g_psort.mode = 1;
     MLOG("DM_NVN_PSOFAIL_RT=%s: read-only pass-attachment provenance armed (one record on that fragment pipeline's failure)", g_psort.key);
 }
@@ -2399,7 +2399,8 @@ static void psort_capture(MTL4RenderPassDescriptor *pd) {     // the real pd and
         if (tx) { o->serial = tx->serial; o->nvn_format = (uint32_t)tx->d.format; o->nvn_target = (uint32_t)tx->d.target;
                   o->nvn_flags = (uint32_t)tx->d.flags; o->nvn_w = tx->d.width; o->nvn_h = tx->d.height;
                   o->nvn_depth = tx->d.depth; o->nvn_samples = (uint32_t)tx->d.samples; }
-        if (i < R.rt.n) { o->has_cview = R.rt.has_cview[i]; o->cset_format = R.rt.cview[i].set_format;
+        if (i < R.rt.n && R.rt.has_cview[i]) {               // no view object: the remaining fields are ignored, not "zero values"
+            o->has_cview = 1; o->cset_format = R.rt.cview[i].set_format;
             o->cset_levels = R.rt.cview[i].set_levels; o->cset_layers = R.rt.cview[i].set_layers;
             o->cview_format = R.rt.cview[i].format; o->cview_base_level = R.rt.cview[i].base_level; o->cview_min_layer = R.rt.cview[i].min_layer; }
         o->attached = pd.colorAttachments[i].texture != nil;
@@ -2531,11 +2532,11 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         uint64_t ser = g_pass.serial + 1; memset(&g_pass, 0, sizeof g_pass); g_pass.serial = ser;
         for (int i = 0; i < R.rt.n && i < 8; i++) { id<MTLTexture> t = R.rt.color[i] ? pd.colorAttachments[i].texture : nil;
             if (t) { g_pass.cfmt[i] = (uint32_t)t.pixelFormat; g_pass.samples = (uint32_t)t.sampleCount; } }
-        psort_capture(pd);
         id<MTLTexture> dt = R.rt.depth ? pd.depthAttachment.texture : nil, stt = R.rt.depth ? pd.stencilAttachment.texture : nil;   // Depth / stencil attachments are fetched separately (possibly only one of them is attached)
         g_pass.hd = dt && dt.pixelFormat != MTLPixelFormatStencil8; g_pass.hs = stt != nil;
         g_pass.dfmt = g_pass.hd ? (uint32_t)dt.pixelFormat : 0; g_pass.sfmt = stt ? (uint32_t)stt.pixelFormat : 0;
         if (dt || stt) g_pass.samples = (uint32_t)(dt ? dt : stt).sampleCount;
+        psort_capture(pd);   // every fixed field of this pass is set now (colour slots, depth, stencil, samples)
         pass_dims(pd, (NSUInteger)R.rt.n, &g_pass.tw, &g_pass.th);
         if (rt_range_on()) { g_pass.reg_gen = reg0; g_pass.ser_gen = ser0; }
         if (rt_range_on()) { g_pass.range_dirty=dirty0; g_pass.range_color=pd.colorAttachments[0].texture; g_pass.range_depth=pd.depthAttachment.texture; }
@@ -4635,22 +4636,37 @@ static fz_snap g_fzs[8]; static int g_nfzs, g_fzs_bad, g_fz_checking; static uin
 static void psort_report(const pso_key *k, const NvShader *vs, const NvShader *fs, id<MTLFunction> ms_fn) {
     if (g_psort.mode != 1 || !psort_match(fs ? fs->key : NULL)) return;
     int assoc = g_psort.valid && g_psort.serial == g_pass.serial && !memcmp(k->cfmt, g_psort.cfmt, sizeof g_psort.cfmt);
-    char b[512], cf[64]; size_t o = 0; cf[0] = 0;
-    for (int i = 0; i < 8 && o + 8 < sizeof cf; i++) o += (size_t)snprintf(cf + o, sizeof cf - o, "%s%u", i ? "," : "", k->cfmt[i]);
-    snprintf(b, sizeof b, "[psort] fs=%s vs=%s frame=%llu pass=%llu assoc=%s snap=%s/%llu cfmt=%s dfmt=%u sfmt=%u ctx defer=%d fzchk=%d fz=%d phase=%d lmap=%d fsfn=%d ms=%d fzkind=%d",
+    int bad = 0; char b[512], cf[128]; size_t o = 0; cf[0] = 0;
+    for (int i = 0; i < 8; i++) {                       // 8 x 10 digits + 7 commas + NUL fits comfortably in 128
+        int r = snprintf(cf + o, sizeof cf - o, "%s%u", i ? "," : "", k->cfmt[i]);
+        if (r < 0 || (size_t)r >= sizeof cf - o) { bad = 1; break; } o += (size_t)r; }
+    int r = snprintf(b, sizeof b, "[psort] fs=%s vs=%s frame=%llu pass=%llu assoc=%s snap=%s/%llu cfmt=%s dfmt=%u sfmt=%u ctx defer=%d fzchk=%d fz=%d phase=%d fsfn=%d ms=%d fzkind=%d",
              fs ? fs->key : "-", vs ? vs->key : "-", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass,
              assoc ? "same-pass" : "mismatch", g_psort.valid ? "valid" : "missing", (unsigned long long)g_psort.serial,
              cf, k->dfmt, k->sfmt, g_defer_replaying, g_fz_checking, g_fz.active, g_fz.phase,
-             g_pso_lmap != NULL, k->fsfn != NULL, ms_fn != nil, g_pso_fz.kind);
-    MLOG("%s", b);
+             k->fsfn != NULL, ms_fn != nil, g_pso_fz.kind);
+    if (r < 0 || (size_t)r >= sizeof b) bad = 1; else MLOG("%s", b);
+    if (g_pso_lmap) {                                   // physical -> logical colour mapping: all eight values, never inferred from R
+        o = 0; b[0] = 0;
+        for (int i = 0; i < 8; i++) { int q = snprintf(b + o, sizeof b - o, "%s%u", i ? "," : "", k->lmap[i]);
+            if (q < 0 || (size_t)q >= sizeof b - o) { bad = 1; break; } o += (size_t)q; }
+        if (!bad) { int r2 = snprintf(cf, sizeof cf, "[psort] map enabled=1 physical->logical=%s", b); if (r2 < 0 || (size_t)r2 >= sizeof cf) bad = 1; else MLOG("%s", cf); }
+    } else { int r2 = snprintf(cf, sizeof cf, "[psort] map enabled=0 physical->logical=identity (no merge: logical colour index = physical attachment index)");
+        if (r2 < 0 || (size_t)r2 >= sizeof cf) bad = 1; else MLOG("%s", cf); }
     for (int i = 0; i < 8; i++) { const psort_slot *q = &g_psort.s[i];
-        snprintf(b, sizeof b, "[psort] slot%d nvn=%d ser=%llu fmt=%#x tgt=%d flags=%#x %ux%ux%u x%u | cview=%d setfmt=%d fmt=%#x setlv=%d base=%u setly=%d minly=%u | attached=%d mtl=%u %ux%ux%u type=%u level=%u slice=%u dp=%u",
+        if (q->has_cview) r = snprintf(b, sizeof b, "[psort] slot%d nvn=%d ser=%llu fmt=%#x tgt=%d flags=%#x %ux%ux%u x%u | cview=1 setfmt=%d fmt=%#x setlv=%d base=%u setly=%d minly=%u | attached=%d mtl=%u %ux%ux%u type=%u level=%u slice=%u dp=%u",
                  i, q->nvn, (unsigned long long)q->serial, q->nvn_format, q->nvn_target, q->nvn_flags,
                  q->nvn_w, q->nvn_h, q->nvn_depth, q->nvn_samples,
-                 q->has_cview, q->cset_format, q->cview_format, q->cset_levels, q->cview_base_level,
+                 q->cset_format, q->cview_format, q->cset_levels, q->cview_base_level,
                  q->cset_layers, q->cview_min_layer, q->attached, q->mtl_fmt, q->mtl_w, q->mtl_h, q->mtl_depth,
                  q->mtl_type, q->pd_level, q->pd_slice, q->pd_depth_plane);
-        MLOG("%s", b); }
+        else r = snprintf(b, sizeof b, "[psort] slot%d nvn=%d ser=%llu fmt=%#x tgt=%d flags=%#x %ux%ux%u x%u | cview=0 setfmt=- fmt=- setlv=- base=- setly=- minly=- (no view object: override fields not copied, not zero values) | attached=%d mtl=%u %ux%ux%u type=%u level=%u slice=%u dp=%u",
+                 i, q->nvn, (unsigned long long)q->serial, q->nvn_format, q->nvn_target, q->nvn_flags,
+                 q->nvn_w, q->nvn_h, q->nvn_depth, q->nvn_samples,
+                 q->attached, q->mtl_fmt, q->mtl_w, q->mtl_h, q->mtl_depth,
+                 q->mtl_type, q->pd_level, q->pd_slice, q->pd_depth_plane);
+        if (r < 0 || (size_t)r >= sizeof b) { bad = 1; break; } MLOG("%s", b); }
+    if (bad) { MLOG("[psort] diagnostic-error: a record line could not be formatted inside its bound; this record is incomplete and no done line follows"); g_psort.mode = 2; return; }
     MLOG("[psort] done key=%s pass=%llu assoc=%s slots=8", g_psort.key, (unsigned long long)g_stat_pass, assoc ? "same-pass" : "mismatch");
     g_psort.mode = 2;
 }
