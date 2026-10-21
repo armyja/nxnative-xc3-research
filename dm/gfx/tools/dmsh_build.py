@@ -366,7 +366,9 @@ def reflect(key, stage, msl, res):
             if stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0:
                 e.update(kind='ubo_ptr', reg=(off - 0x210) // 16)   # compute-stage uniform slot r: address at c0[0x210 + 0x10 r], read through global memory (checked against cs_lut_combine_c reading cb10[66])
             else: e['reg'] = (off - base) // 16 if off is not None and base is not None and 0 <= off - base < 0x100 and (off - base) % 16 == 0 else None
-            e['rw'] = bool(b and b['flags'] & 2)
+            # rw is "not proven read-only": the pinned Ryujinx BufferUsageFlags has only Write = 1 << 0
+            # (dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/BufferUsageFlags.cs); bit 1 is not a defined flag.
+            e['rw'] = bool(b and b['flags'] & 1)
     return binds
 
 DRV_FILL = {0: [(b, b + 0x100) for b in sorted(SSBO.values())],   # c0: storage buffer address tables (vertex / compute / pixel, 16 slots × 0x10 each)
