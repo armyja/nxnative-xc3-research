@@ -22,6 +22,9 @@ def varying_use(path):
     (out.x = float4(0,0,0,1), the value an unwritten component reads) is not counted as a write."""
     src = open(path).read()
     field_loc = {m.group(2): int(m.group(3)) for m in USER.finditer(src)}
+    # dm_padN names are what vs_pad adds for a location the vertex stage never writes: it fills them with the default
+    # (0,0,0,1), which is exactly the contract for an unwritten location, so they count as covering all components.
+    padded = {loc for name, loc in field_loc.items() if name.startswith('dm_pad')}
     comp = collections.defaultdict(set)
     for m in re.finditer(r'\b(out|in)\.(\w+)\.([xyzw])\b', src):
         loc = field_loc.get(m.group(2))
@@ -33,6 +36,7 @@ def varying_use(path):
         except ValueError: vals = []
         if vals == [0.0, 0.0, 0.0, 1.0]: continue       # initialisation, not data
         comp[loc] |= set('xyzw')
+    for loc in padded: comp[loc] |= set('xyzw')
     return field_loc, comp
 
 
