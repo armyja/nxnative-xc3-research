@@ -434,7 +434,11 @@ def scan_file(args):
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
         kt_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), pairs_of(found), trees
-    d = unzs(path) if path.endswith('.zs') else open(path, 'rb').read()
+    if path.endswith('.zs'):
+        d = unzs(path)
+    else:
+        with open(path, 'rb') as f: d = f.read()
+
     if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
