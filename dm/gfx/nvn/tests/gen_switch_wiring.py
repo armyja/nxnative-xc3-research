@@ -85,24 +85,37 @@ def build(block_lines, tag, outdir):
     d = os.path.join(outdir, tag); os.makedirs(d, exist_ok=True)
     c = os.path.join(d, 'wiring.c'); open(c, 'w').write(src)
     r = subprocess.run(['clang', '-O1', '-Wall', '-Wextra', '-o', os.path.join(d, 'wiring'), c], capture_output=True, text=True)
-    if r.returncode: return r.returncode, 'compile failed: ' + r.stderr[-400:], None
+    if r.returncode: return r.returncode, None, 'compile failed: ' + r.stderr[-400:], c
     run = subprocess.run([os.path.join(d, 'wiring')], capture_output=True, text=True)
-    return run.returncode, run.stdout, c
+    return 0, run.returncode, run.stdout, c
 
 out = os.environ.get('SSBOOBS_OUT') or tempfile.mkdtemp(prefix='wiring_')
 os.makedirs(out, exist_ok=True)
-rc, log, c = build(block, 'normal', out)
-print('normal rc=%d' % rc); print(log[-1200:])
-if rc != 0:
-    sys.exit('normal build/run failed')
-# mutation: move the SSBO case into the middle of the group; fallthrough must make the checks fail
+crc, rrc, log, c = build(block, 'normal', out)
+print('normal compile_rc=%d run_rc=%s' % (crc, rrc)); print((log or '')[:0]); print(log[-1200:] if log else '')
+if crc != 0 or rrc != 0: sys.exit('normal build/run failed')
+# Mutation: really MOVE the one independent SSBO case between the group labels (before the shared body).
+ssbo_line = next(l for l in block if l.strip().startswith('case OP_BIND_SSBO:'))
 mut = [l for l in block if not l.strip().startswith('case OP_BIND_SSBO:')]
-ssbo = [l for l in block if l.strip().startswith('case OP_BIND_SSBO:')]
-gi = next(i for i, l in enumerate(mut) if l.strip().startswith('case OP_BIND_UBO:'))
-mut = mut[:gi + 1] + mut[gi + 1:]
-mrc, mlog, mc = build(mut, 'mutated', out)
-print('mutated rc=%d (expected non-zero)' % mrc)
-if mrc == 0:
-    sys.exit('mutation test did not fail: the wiring check cannot detect a fallthrough')
+gl = next(i for i, l in enumerate(mut) if 'case OP_BIND_STATE:' in l)          # insert after this label line
+mut = mut[:gl + 1] + [ssbo_line] + mut[gl + 1:]
+# structural check: every opcode label still present, counts unchanged, only the SSBO position differs
+import re as _re
+def labels(txt):
+    return _re.findall(r'case (OP_[A-Z_]+)', '\n'.join(txt))
+ln, lm = labels(block), labels(mut)
+assert sorted(ln) == sorted(lm), 'mutation changed the label multiset'
+assert ln.count('OP_BIND_SSBO') == lm.count('OP_BIND_SSBO') == 1, 'mutation must keep exactly one SSBO case'
+assert ln.index('OP_BIND_SSBO') != lm.index('OP_BIND_SSBO'), 'mutation did not move the SSBO case'
+print('label multiset unchanged, SSBO moved from label position %d to %d' % (ln.index('OP_BIND_SSBO'), lm.index('OP_BIND_SSBO')))
+mcrc, mrrc, mlog, mc = build(mut, 'mutated', out)
+open(os.path.join(out, 'mutated_wiring.c'), 'w').write(open(mc).read())
+open(os.path.join(out, 'mutated_stdout.txt'), 'w').write(mlog or '')
+print('mutated compile_rc=%d run_rc=%s' % (mcrc, mrrc)); print((mlog or '')[-900:])
+assert mcrc == 0, 'mutated block must still compile; a compile failure would not test fallthrough'
+assert mrrc != 0, 'mutation test did not fail at run time'
+assert 'FAIL' in mlog, 'mutation did not fail through a runtime assertion'
+assert any(tag in mlog for tag in ('OP_SCISSOR', 'OP_BIND_PROGRAM', 'OP_BIND_STATE')), \
+    'mutation failure does not include an upstream group label routing error'
 print('out dir:', out)
 sys.exit(0)
