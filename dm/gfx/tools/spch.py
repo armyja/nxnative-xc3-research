@@ -11,19 +11,15 @@
 #   A ShaderProgram is {program_data offset, count} into the same file; its bytes are an NVSD whose
 #   nvsd_shaders list holds {vertex_xv4_size, fragment_xv4_size, vertex_unk_item_size, fragment_unk_item_size}.
 #
-# Association is purely structural. It never uses a code length to choose a control record, and it never looks
-# for a magic; the descriptor's own code sizes advance the xv4 cursor:
-#   xv4 cursor: starts at Slct.xv4_offset, advances by vertex_xv4_size + fragment_xv4_size per program
-#   unk cursor: starts at Slct.unk_item_offset, advances by vertex_unk_item_size + fragment_unk_item_size
-# Each Slct's two walks must land exactly on the ends its own fields declare, corroborated by
-# xv4_total_size / unk_item_total_size, or this module refuses the file. Two programs with identical code
-# lengths still get different windows: the record a stage gets comes from cursor arithmetic alone.
+# Association is purely structural and driven by the prefix chain the descriptor itself states. A Slct's
+# programs are laid out back to back, so each program has its own code / control base; within one program the
+# nvsd_shaders entries are a prefix chain, each contributing one stage, and the last entry's vx / vu are the
+# accumulated totals. Nothing is matched by code length or found by scanning for a magic. Those bases are the
+# whole point: a Slct base used for every program silently reads the first program's bytes for all of them.
 #
-# Supported layout: a single nvsd_shaders entry carrying data (the last one), any earlier entry all zero. Any other
-# arrangement is reported as unsupported rather than guessed at: an entry is never dropped silently. The engine
-# writes a leading entry whose fragment sizes equal the last entry's vertex sizes in every verified program, but
-# xc3_lib itself asks "Why is only the last set of shaders used?" (spch.rs, TODO), so that meaning is not
-# established and any non-zero leading entry is refused.
+# Supported: version 1010 and the layout above. An entry that does not continue the chain, a stage missing its
+# code or control half, a control record whose stated length or +0x704 disagrees with the entry's span, and any
+# window leaving its section are refused rather than guessed around.
 
 import struct
 
@@ -105,45 +101,65 @@ def shaders(d, label, want=None):
             raise ValueError(f'{label} slct{si}: xv4 window {xoff:#x}+{xtotal:#x} outside xv4_section ({len(xv4_bytes):#x})')
         if item_off + item_total > len(unk_bytes):
             raise ValueError(f'{label} slct{si}: unk window {item_off:#x}+{item_total:#x} outside unk_section ({len(unk_bytes):#x})')
-        xcur, ucur = xoff, item_off
+        # One Slct: each program's storage starts where the previous program ended, so the two cursors below
+        # are per-Slct program bases, not the Slct base itself. Using the Slct base for every program reads the
+        # first program's bytes for all of them.
+        code_base, ctl_base = xoff, item_off
         for pi in range(prog_cnt):
-            # program records are relative to the Slct itself; their {offset,length} is relative to the Slct too
-            # relative_base is this Slct's own start; the bound is still the end of slct_section
             slct_start = slct_sec + s_rel
             nvsd = _read_nvsd(d, slct_start + prog_off + 8 * pi, slct_start,
                               slct_sec + slct_sec_len, label, si, pi)
-            sizes = _program_sizes(nvsd, label, si, pi)
-            vx, fx, vu, fu = sizes
-            # xv4 side: vertex then fragment
-            xv4_walk = (xcur, xcur + vx, xcur + vx + fx)
-            # unk side: vertex record then fragment record, as xc3_lib's read_fragment_unk_item walks it
-            unk_walk = (ucur, ucur + vu, ucur + vu + fu)
-            for slot, st, code_span, ctl_span in (('vertex', 'vs', (xv4_walk[0], xv4_walk[1]), (unk_walk[0], unk_walk[1])),
-                                                  ('fragment', 'ps', (xv4_walk[1], xv4_walk[2]), (unk_walk[1], unk_walk[2]))):
-                ncode, nctl = code_span[1] - code_span[0], ctl_span[1] - ctl_span[0]
-                if ncode == 0 and nctl == 0:
-                    continue   # the stage is absent, which the descriptor says explicitly
-                if ncode == 0 or nctl == 0:
-                    raise Unsupported(f'{label} slct{si} program{pi} {st}: code {ncode} bytes but control {nctl} bytes: a stage with one side missing')
-                if code_span[0] + ncode > xoff + xtotal or ctl_span[0] + nctl > item_off + item_total:
-                    raise ValueError(f'{label} slct{si} program{pi} {slot}: window runs past its Slct (code {code_span}, ctl {ctl_span})')
+            entries = _entries(nvsd, label, si, pi)
+            # The entries of one program form a prefix chain: entry i starts where entries 0..i-1 ended, so
+            # each entry contributes exactly one new stage and the last entry's vx/vu are running totals.
+            code_prefix = ctl_prefix = 0
+            for ei, (vx, fx, vu, fu) in enumerate(entries):
+                if vx != code_prefix or vu != ctl_prefix:
+                    raise Unsupported(f'{label} slct{si} program{pi} entry{ei}: the descriptor says vx={vx} vu={vu}, '
+                                      f'but the entries before it end at code {code_prefix} control {ctl_prefix}; '
+                                      f'this is not the prefix layout this parser reads')
+                if not fx or not fu:
+                    raise Unsupported(f'{label} slct{si} program{pi} entry{ei}: code {fx} bytes, control {fu} bytes; '
+                                      f'a stage without both halves is not supported')
+                code_span = (code_base + vx, code_base + vx + fx)
+                ctl_span = (ctl_base + vu, ctl_base + vu + fu)
+                if code_span[1] > xoff + xtotal:
+                    raise ValueError(f'{label} slct{si} program{pi} entry{ei}: code {code_span[0]:#x}+{fx:#x} '
+                                     f'runs past the Slct xv4 window ({xoff + xtotal:#x})')
+                if ctl_span[1] > item_off + item_total:
+                    raise ValueError(f'{label} slct{si} program{pi} entry{ei}: control {ctl_span[0]:#x}+{fu:#x} '
+                                     f'runs past the Slct unk window ({item_off + item_total:#x})')
                 code = xv4_bytes[code_span[0]:code_span[1]]
-                # The slot spans what the walk consumes, which may include padding after the record: the record
-                # itself is as long as its own header says (control +0x20), and it must start with the magic.
                 raw = unk_bytes[ctl_span[0]:ctl_span[1]]
-                ctl = _record(raw, label, si, pi, slot)
-                # The descriptor only fixes the span; the stage itself is what the code area says. A compute
-                # area in either slot is compute, and a graphics area carries its own stage in the SPH bits.
-                # Pairing is still structural: the span comes from the descriptor, never from the stage.
-                st = _stage_of(code, slot, label, si, pi)
+                ctl = _record(raw, label, si, pi, ei)
+                # The record states the length of the code object it belongs to; it must be this entry's span.
+                stated = _u32(ctl, 0x704)
+                if stated != fx:
+                    raise Unsupported(f'{label} slct{si} program{pi} entry{ei}: the control record says the code '
+                                      f'is {stated:#x} bytes, but the entry spans {fx:#x}')
+                st = _stage_of(code, ei, label, si, pi)
+                where = f'{label}#SPCH#{si}:{pi}:{ei}:{st}@xv4+{code_span[0]:#x}/unk+{ctl_span[0]:#x}'
                 if want is None or st in want:
-                    out.append((f'{label}#SPCH#{si}:{pi}:{st}@xv4+{code_span[0]:#x}/unk+{ctl_span[0]:#x}', st, ctl, code))
-            xcur += vx + fx
-            ucur += vu + fu
-        if xcur != xoff + xtotal:
-            raise ValueError(f'{label} slct{si}: the xv4 walk ended at {xcur:#x}, but xv4_offset+xv4_total_size is {xoff + xtotal:#x}')
-        if ucur != item_off + item_total:
-            raise ValueError(f'{label} slct{si}: the unk walk ended at {ucur:#x}, but unk_item_offset+unk_item_total_size is {item_off + item_total:#x}')
+                    out.append((where, st, ctl, code))
+                code_prefix += fx
+                ctl_prefix += fu
+            last = entries[-1]
+            # The program ends where its own descriptor says it does; anything else is an inconsistency.
+            if code_prefix != last[0] + last[1]:
+                raise Unsupported(f'{label} slct{si} program{pi}: the entries end at code {code_prefix}, '
+                                  f'but the last entry declares {last[0] + last[1]}')
+            if ctl_prefix != last[2] + last[3]:
+                raise Unsupported(f'{label} slct{si} program{pi}: the entries end at control {ctl_prefix}, '
+                                  f'but the last entry declares {last[2] + last[3]}')
+            code_base += code_prefix
+            ctl_base += ctl_prefix
+        # The Slct's own totals must be exactly the sum of its programs.
+        if code_base != xoff + xtotal:
+            raise ValueError(f'{label} slct{si}: the programs end at xv4 {code_base:#x}, '
+                             f'but xv4_offset+xv4_total_size is {xoff + xtotal:#x}')
+        if ctl_base != item_off + item_total:
+            raise ValueError(f'{label} slct{si}: the programs end at unk {ctl_base:#x}, '
+                             f'but unk_item_offset+unk_item_total_size is {item_off + item_total:#x}')
     if not out:
         raise Unsupported(f'{label}: the container holds no vertex or pixel stage')
     return out
@@ -173,64 +189,57 @@ def _read_nvsd(d, at, relative_base, section_end, label, si, pi):
     return d[start:start + cnt]
 
 
-def _program_sizes(nvsd, label, si, pi):
-    """NVSD → (vertex_xv4, fragment_xv4, vertex_unk, fragment_unk).
+def _entries(nvsd, label, si, pi):
+    """NVSD → [(vertex_xv4_size, fragment_xv4_size, vertex_unk_item_size, fragment_unk_item_size)] in order.
 
-    xc3_lib reads `nvsd_shaders.last()`; only the layout that use is known to be right for is accepted here:
-    one entry with data at the end, every earlier entry all zero. Several entries with data, or an unknown
-    shape, is unsupported: a variant must not be dropped silently.
+    Every entry contributes one stage to the program's prefix chain, so all of them are returned. The library
+    reads `nvsd_shaders.last()` and asks in a TODO why only the last set is used; on the five containers
+    verified here the entries are a prefix chain, and refusing to read the earlier ones is what made them
+    unreadable.
     """
     if len(nvsd) < 0x20:
         raise Unsupported(f'{label} slct{si} program{pi}: NVSD is {len(nvsd)} bytes, too short to hold a header')
-    # unks2[6] occupies 0x18, then {offset, count} (parse_offset32_count32, offset first). Entries are 5 u32:
-    # unk6, vertex_xv4_size, fragment_xv4_size, vertex_unk_item_size, fragment_unk_item_size.
     off, cnt = _pair(nvsd, 0x18, 0)
     if cnt == 0:
         raise Unsupported(f'{label} slct{si} program{pi}: nvsd_shaders is empty')
     if off < 0x20:
         raise Unsupported(f'{label} slct{si} program{pi}: nvsd_shaders offset {off:#x} overlaps the NVSD header')
     if off + 0x14 * cnt > len(nvsd):
-        raise Unsupported(f'{label} slct{si} program{pi}: nvsd_shaders {off:#x}+{0x14 * cnt:#x} outside the {len(nvsd):#x}-byte NVSD')
-    entries = [struct.unpack_from('<5I', nvsd, off + 0x14 * k)[1:] for k in range(cnt)]
-    # This engine writes one entry per program in a fixed shape: every entry before the last has no vertex
-    # stage at all (vertex_xv4_size and vertex_unk_item_size zero), and the last carries the vertex / fragment
-    # pair the Slct's walk consumes. A leading entry that does carry a vertex stage is a variant this parser
-    # does not understand, and dropping it silently would lose a shader, so the file is refused instead.
-    for k, e in enumerate(entries[:-1]):
-        if any(e):
-            raise Unsupported(f'{label} slct{si} program{pi}: nvsd_shaders entry {k} of {cnt} is not all zero '
-                              f'(vertex_xv4_size={e[0]}, fragment_xv4_size={e[1]}, vertex_unk_item_size={e[2]}, '
-                              f'fragment_unk_item_size={e[3]}); its meaning is not established, so it is not dropped')
-    last = entries[-1]
-    if not any(last):
-        raise Unsupported(f'{label} slct{si} program{pi}: the last nvsd_shaders entry of {cnt} carries no sizes')
-    return entries[-1]
+        raise Unsupported(f'{label} slct{si} program{pi}: nvsd_shaders {off:#x}+{0x14 * cnt:#x} '
+                          f'outside the {len(nvsd):#x}-byte NVSD')
+    # Each entry is five u32: unk6, then the four sizes.
+    return [struct.unpack_from('<5I', nvsd, off + 0x14 * k)[1:] for k in range(cnt)]
 
 
-def _record(raw, label, si, pi, slot):
-    """Trim a slot span down to the control record it starts with (control +0x20 holds its own length)."""
-    if len(raw) < 0x704:
-        raise ValueError(f'{label} slct{si} program{pi} {slot}: control span is {len(raw)} bytes, shorter than a record')
+def _record(raw, label, si, pi, ei):
+    """The control record filling this entry's whole span; it must state the same length as the span.
+
+    No trimming and no exception for padding: every entry verified here has its control record filling the
+    span exactly, so a shorter or longer record means the layout is not the one this parser reads.
+    """
+    if len(raw) < 0x708:
+        raise ValueError(f'{label} slct{si} program{pi} entry{ei}: control span is {len(raw)} bytes, '
+                         f'shorter than the +0x704 field')
     if raw[:4] != CTL_MAGIC:
-        raise Unsupported(f'{label} slct{si} program{pi} {slot}: control record starts with {raw[:4].hex()}, not the control magic')
-    n = _u32(raw, 0x20)
-    if not 0x760 <= n < 0x880:
-        n = 0x880
-    if n > len(raw):
-        raise ValueError(f'{label} slct{si} program{pi} {slot}: control declares {n:#x} bytes but its slot holds {len(raw):#x}')
-    return raw[:n]
+        raise Unsupported(f'{label} slct{si} program{pi} entry{ei}: control record starts with {raw[:4].hex()}, '
+                          f'not the control magic')
+    own = _u32(raw, 0x20)
+    if own != len(raw):
+        raise Unsupported(f'{label} slct{si} program{pi} entry{ei}: the control record declares {own:#x} bytes '
+                          f'but its span is {len(raw):#x}')
+    return raw
 
 
-def _stage_of(code, slot, label, si, pi):
-    """The stage of the code area in `slot`: compute by its magic, otherwise the SPH header's stage bits."""
+def _stage_of(code, ei, label, si, pi):
+    """The stage of this entry's code area: compute by its magic, otherwise the SPH header's stage bits."""
     if len(code) < 0x34:
-        raise ValueError(f'{label} slct{si} program{pi} {slot}: code area is {len(code):#x} bytes, too short for an SPH header')
+        raise ValueError(f'{label} slct{si} program{pi} entry{ei}: code area is {len(code):#x} bytes, too short for an SPH header')
     if code[:4] == CS_MAGIC:
         return 'cs'
     if code[:4] != GFX_MAGIC:
-        raise Unsupported(f'{label} slct{si} program{pi} {slot}: code area magic is {code[:4].hex()}, neither graphics nor compute')
+        raise Unsupported(f'{label} slct{si} program{pi} entry{ei}: code area magic is {code[:4].hex()}, neither graphics nor compute')
     bit = (_u32(code, 0x30) >> 10) & 0xf
     st = _SPH_STAGE.get(bit)
     if st is None:
-        raise Unsupported(f'{label} slct{si} program{pi} {slot}: SPH stage bits {bit} are not a known stage')
+        raise Unsupported(f'{label} slct{si} program{pi} entry{ei}: SPH stage bits {bit} are not a known stage')
     return st
