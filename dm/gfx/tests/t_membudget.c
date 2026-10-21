@@ -1,6 +1,5 @@
 // Guest physical-memory budget: the accounting the SVCs and GetInfo share (dm/host/membudget.c).
-// Small numbers throughout: no mprotect, no guest, no game files.
-#include <pthread.h>
+// Small numbers, no mprotect, no guest, no game files; the VM-effect half is t_membudget_vm.c.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,70 +8,66 @@
 static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
 #define PAGE 4096ull
+static mb_result r;
+static int map(uint64_t o, uint64_t s) { return mb_map(o, s, NULL, NULL, &r); }
+static int unmap(uint64_t o, uint64_t s) { return mb_unmap(o, s, NULL, NULL, &r); }
+static int heap(uint64_t s) { return mb_set_heap(s, NULL, NULL, &r); }
 
 int main(void) {
     const uint64_t CAP = 64 * 1024 * 1024, BUDGET = 16 * 1024 * 1024, FIXED = 2 * 1024 * 1024;
 
-    // map / unmap / used accounting
     mb_init(CAP, BUDGET, FIXED);
-    uint64_t nb = 0, used = 0;
-    CHECK(mb_map(0, 4 * PAGE, &nb, &used) == 0);
-    CHECK(nb == 4 * PAGE);
-    CHECK(used == FIXED + 4 * PAGE);
-    CHECK(mb_alias() == 4 * PAGE);
+    CHECK(map(0, 4 * PAGE) == MB_OK && r.new_bytes == 4 * PAGE && r.used_after == FIXED + 4 * PAGE);
+    CHECK(map(0, 4 * PAGE) == MB_OK && r.new_bytes == 0 && mb_alias() == 4 * PAGE);          // duplicate: free
+    CHECK(map(2 * PAGE, 4 * PAGE) == MB_OK && r.new_bytes == 2 * PAGE && mb_alias() == 6 * PAGE);  // overlap: only new
+    CHECK(unmap(1 * PAGE, 2 * PAGE) == MB_OK && r.new_bytes == 2 * PAGE && mb_alias() == 4 * PAGE);
+    CHECK(unmap(1 * PAGE, 2 * PAGE) == MB_OK && r.new_bytes == 0 && mb_alias() == 4 * PAGE);  // repeat: no negative
+    CHECK(unmap(1000 * PAGE, 8 * PAGE) == MB_OK && r.new_bytes == 0 && mb_alias() == 4 * PAGE);
+    CHECK(map(1 * PAGE, 2 * PAGE) == MB_OK && r.new_bytes == 2 * PAGE && mb_alias() == 6 * PAGE);  // remap charged
 
-    // duplicate map charges nothing, overlap charges only the new part
-    CHECK(mb_map(0, 4 * PAGE, &nb, &used) == 0);
-    CHECK(nb == 0 && mb_alias() == 4 * PAGE);
-    CHECK(mb_map(2 * PAGE, 4 * PAGE, &nb, &used) == 0);       // pages 2..5, only 4 and 5 are new
-    CHECK(nb == 2 * PAGE && mb_alias() == 6 * PAGE);
+    // range errors: refused before any accounting, and distinguishable from budget errors
+    mb_init(CAP, BUDGET, FIXED);
+    CHECK(map(0, 4 * PAGE) == MB_OK);
+    uint64_t a0 = mb_alias(), u0 = mb_used();
+    CHECK(map(CAP + PAGE, PAGE) == MB_E_RANGE);            // off beyond the region
+    CHECK(map(CAP - PAGE, 2 * PAGE) == MB_E_RANGE);        // end beyond the region (size > cap - off)
+    CHECK(map(0, UINT64_MAX) == MB_E_RANGE);               // size would wrap any off+size
+    CHECK(map(UINT64_MAX - PAGE, PAGE) == MB_E_RANGE);
+    CHECK(map(0, 0) == MB_E_RANGE);                        // empty
+    CHECK(map(1, PAGE) == MB_E_RANGE);                     // unaligned offset
+    CHECK(map(0, PAGE + 1) == MB_E_RANGE);                 // unaligned size
+    CHECK(unmap(CAP + PAGE, PAGE) == MB_E_RANGE);
+    CHECK(unmap(0, UINT64_MAX) == MB_E_RANGE);
+    CHECK(unmap(0, 0) == MB_E_RANGE);
+    CHECK(mb_alias() == a0 && mb_used() == u0);            // nothing changed
 
-    // unmap a hole inside a mapped range: only the mapped part is released; a repeat releases nothing
-    uint64_t clr = 0;
-    mb_unmap(1 * PAGE, 2 * PAGE, &clr, &used);                 // pages 1,2 were mapped
-    CHECK(clr == 2 * PAGE && mb_alias() == 4 * PAGE);
-    mb_unmap(1 * PAGE, 2 * PAGE, &clr, &used);                 // already unset: must not go negative
-    CHECK(clr == 0 && mb_alias() == 4 * PAGE);
-    mb_unmap(1000 * PAGE, 8 * PAGE, &clr, &used);              // entirely unmapped
-    CHECK(clr == 0 && mb_alias() == 4 * PAGE);
-
-    // remap after unmap is charged again
-    CHECK(mb_map(1 * PAGE, 2 * PAGE, &nb, &used) == 0);
-    CHECK(nb == 2 * PAGE && mb_alias() == 6 * PAGE);
-
-    // exactly to the budget succeeds; one more page is refused and changes nothing
+    // exactly the budget succeeds; one more page is refused and changes nothing
     mb_init(CAP, BUDGET, FIXED);
     uint64_t room = BUDGET - FIXED;
-    CHECK(mb_map(0, room, &nb, &used) == 0);
+    CHECK(map(0, room) == MB_OK && mb_used() == BUDGET);
+    CHECK(map(room, PAGE) == MB_E_BUDGET && r.new_bytes == PAGE && r.used_after == BUDGET);
     CHECK(mb_alias() == room && mb_used() == BUDGET);
-    uint64_t before_alias = mb_alias(), before_used = mb_used();
-    CHECK(mb_map(room, PAGE, &nb, &used) == 1);
-    CHECK(nb == PAGE);
-    CHECK(mb_alias() == before_alias && mb_used() == before_used);
-    // the refused page is still unmapped: freeing one page then mapping it succeeds
-    mb_unmap(0, PAGE, &clr, &used);
-    CHECK(mb_map(room, PAGE, &nb, &used) == 0 && nb == PAGE);
+    CHECK(unmap(0, PAGE) == MB_OK);
+    CHECK(map(room, PAGE) == MB_OK && r.new_bytes == PAGE);
 
     // a fully mapped range succeeds even when the budget is exhausted
     mb_init(CAP, BUDGET, FIXED);
-    CHECK(mb_map(0, room, &nb, &used) == 0 && mb_used() == BUDGET);
-    CHECK(mb_map(0, room, &nb, &used) == 0 && nb == 0 && mb_used() == BUDGET);
+    CHECK(map(0, room) == MB_OK && mb_used() == BUDGET);
+    CHECK(map(0, room) == MB_OK && r.new_bytes == 0 && mb_used() == BUDGET);
 
-    // heap and alias share the pool: heap growth refused, shrink frees room, then map works
+    // heap and alias share the pool
     mb_init(CAP, BUDGET, FIXED);
-    CHECK(mb_set_heap(8 * 1024 * 1024, &used) == 0);
-    CHECK(mb_used() == FIXED + 8 * 1024 * 1024);
-    CHECK(mb_map(0, 6 * 1024 * 1024, &nb, &used) == 0);       // 16 - 2 fixed - 8 heap = 6 MiB left
-    CHECK(mb_used() == BUDGET);
-    CHECK(mb_set_heap(9 * 1024 * 1024, &used) == 1);           // refused: alias + heap + fixed would exceed
-    CHECK(mb_heap() == 8 * 1024 * 1024);
-    CHECK(mb_set_heap(4 * 1024 * 1024, &used) == 0);           // shrink releases 4 MiB of budget
-    CHECK(mb_map(6 * 1024 * 1024, 4 * 1024 * 1024, &nb, &used) == 0);
-    CHECK(mb_used() == BUDGET);
-
-    // heap above the region is refused without changing anything
+    CHECK(heap(8 * 1024 * 1024) == MB_OK && mb_used() == FIXED + 8 * 1024 * 1024);
+    CHECK(map(0, 6 * 1024 * 1024) == MB_OK && mb_used() == BUDGET);
+    CHECK(heap(9 * 1024 * 1024) == MB_E_BUDGET && mb_heap() == 8 * 1024 * 1024);
+    CHECK(heap(4 * 1024 * 1024) == MB_OK);                  // shrink releases budget
+    CHECK(map(6 * 1024 * 1024, 4 * 1024 * 1024) == MB_OK && mb_used() == BUDGET);
     mb_set_heap_cap(16 * 1024 * 1024);
-    CHECK(mb_set_heap(32 * 1024 * 1024, &used) == 2 && mb_heap() == 4 * 1024 * 1024);
+    CHECK(heap(32 * 1024 * 1024) == MB_E_CAP && mb_heap() == 4 * 1024 * 1024);
+
+    // a fixed usage already over the pool must refuse rather than wrap
+    mb_init(CAP, 1 * 1024 * 1024, 2 * 1024 * 1024);
+    CHECK(map(0, PAGE) == MB_E_BUDGET && mb_alias() == 0);
 
     printf("membudget: %s\n", fails ? "FAILED" : "ok");
     return fails ? 1 : 0;

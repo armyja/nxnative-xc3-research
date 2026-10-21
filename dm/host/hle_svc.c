@@ -89,6 +89,26 @@ static void map_del(int i) { g_map[i] = g_map[--g_nmap]; }   // caller holds g_m
 // One bit per 4 KB page of the alias region (mapped = 1): Map sets bits, Unmap clears them; returns the number of pages whose state really changed (signed: positive for Map, negative for Unmap)
 // the alias page bitmap and its budget live in membudget.c, which Map/Unmap/SetHeapSize and GetInfo share
 
+// The VM side of the budget transactions: the permission change runs inside membudget's lock, so the accounting
+// and the real page state can never be left disagreeing by two threads.
+static int alias_effect(void *ctx, uint64_t off, uint64_t size, int map) {
+    (void)ctx;
+    uint8_t *a = g_alias + off;
+    uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)a, hi = lo + size;
+    uintptr_t mlo = map ? lo & ~(pg - 1) : (lo + pg - 1) & ~(pg - 1);
+    uintptr_t mhi = map ? (hi + pg - 1) & ~(pg - 1) : hi & ~(pg - 1);
+    if (mhi <= mlo) return 0;
+    if (map) return mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE) ? -1 : 0;
+    madvise((void *)mlo, mhi - mlo, MADV_FREE);            // host pages are 16 KB, Horizon pages 4 KB
+    return mprotect((void *)mlo, mhi - mlo, PROT_NONE) ? -1 : 0;
+}
+static int heap_effect(void *ctx, uint64_t off, uint64_t size, int map) {
+    (void)ctx; (void)off; (void)map;
+    if (size == g_heap_cur) return 0;
+    if (size > g_heap_cur) return mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE) ? -1 : 0;
+    return mprotect(g_heap + size, g_heap_cur - size, PROT_NONE) ? -1 : 0;
+}
+
 int svc_thread(int num, uint64_t *regs);   // hle_thread.c: thread and synchronization kind
 
 uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
@@ -108,14 +128,14 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
                                               (unsigned long long)APP_POOL, (unsigned long long)DM_GAME_MEM_USED, big_bss_bytes());
             regs[0] = 0x10801; return 0;
         }
-        // the heap comes out of the same pool the alias mappings draw from: commit only if it still fits
-        uint64_t hused = 0; int hrc = mb_set_heap(size, &hused);
-        if (hrc == 1) { static int once2; if (!once2++) LOG("[mem] SetHeapSize %#zx refused: heap+fixed+alias %#llx > app pool %#llx", size, (unsigned long long)hused, (unsigned long long)APP_POOL); regs[0] = 0x10801; return 0; }
-        if (hrc == 2) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD401; return 0; }
-        int rc = 0;
-        if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
-        else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
-        if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
+        // the heap comes out of the same pool the alias mappings draw from; the permission change happens inside
+        // that transaction, and a refusal (pool, region or mprotect) leaves the heap exactly as it was
+        mb_result hr;
+        int hrc = mb_set_heap(size, heap_effect, NULL, &hr);
+        if (hrc == MB_E_BUDGET) { static int once2; if (!once2++) LOG("[mem] SetHeapSize %#zx refused: heap+fixed+alias %#llx > app pool %#llx", size, (unsigned long long)hr.used_after, (unsigned long long)APP_POOL); regs[0] = 0x10801; return 0; }
+        if (hrc == MB_E_CAP) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD401; return 0; }
+        if (hrc != MB_OK) { LOG("SetHeapSize %#zx: mprotect failed errno=%d, heap unchanged at %#zx", size, errno, g_heap_cur); regs[0] = 0xD401; return 0; }
+        if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p", size, g_heap);
         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
         g_heap_cur = size;
         regs[0] = 0; regs[1] = (uint64_t)g_heap; return 0;
@@ -195,33 +215,25 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
     }
     case 0x2C: case 0x2D: {  // MapPhysicalMemory / UnmapPhysicalMemory(addr, size): only allowed inside the alias region (used by the SDK's VammManager)
         uint8_t *a = (uint8_t *)regs[0]; size_t size = regs[1];
-        if (a < g_alias || a + size > g_alias + g_alias_cap) { LOG("SVC %#x outside the alias region %p+%#zx", num, a, size); regs[0] = 0xD401; return 0; }
-        // Host pages are 16 KB, Horizon pages 4 KB: a map is rounded out to host pages (the extra neighboring 4K pages are inside the alias region and merely become writable early, harmless);
-        // an unmap only reclaims host pages lying entirely inside the range (a partly covered page may still be used by an adjacent mapping, so it stays writable)
-        uint64_t mnew = 0, mused = 0;
-        if (num == 0x2C) {
-            // only pages that are not already mapped are charged, and the refusal happens before any permission
-            // change or accounting, so a refused map leaves the bitmap, the usage and the protections untouched
-            if (mb_map((uint64_t)(a - g_alias), size, &mnew, &mused)) {
-                LOG("[mem] MapPhysicalMemory %p+%#zx refused: new %#llu used+new %#llu > app pool %#llu", a, size,
-                    (unsigned long long)mnew, (unsigned long long)(mused + mnew), (unsigned long long)APP_POOL);
-                regs[0] = 0x10801; return 0;
-            }
-        } else mb_unmap((uint64_t)(a - g_alias), size, &mnew, &mused);
-        uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)a, hi = (uintptr_t)a + size;
-        uintptr_t mlo = num == 0x2C ? lo & ~(pg - 1) : (lo + pg - 1) & ~(pg - 1), mhi = num == 0x2C ? (hi + pg - 1) & ~(pg - 1) : hi & ~(pg - 1);
-        int rc = 0;
-        if (mhi > mlo) rc = num == 0x2C ? mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE)
-                                        : (madvise((void *)mlo, mhi - mlo, MADV_FREE), mprotect((void *)mlo, mhi - mlo, PROT_NONE));
-        if (rc) die("SVC %#x mprotect %p+%#zx errno=%d", num, a, size, errno);
+        // Host pages are 16 KB, Horizon pages 4 KB: a map is rounded out to host pages (the extra neighbouring 4K pages are inside the alias region and merely become writable early); an unmap only reclaims host pages lying entirely inside the range. The range check itself is in membudget, by subtraction, so no a+size can wrap.
+        // One transaction: range check, new-page count, pool check, the mprotect itself and the accounting all
+        // happen under membudget's lock, so two threads cannot interleave into "bitmap says mapped, page says no".
+        mb_result mr;
+        uint64_t off = a >= g_alias ? (uint64_t)(a - g_alias) : UINT64_MAX;   // outside the region -> range error
+        int mrc = num == 0x2C ? mb_map(off, size, alias_effect, NULL, &mr) : mb_unmap(off, size, alias_effect, NULL, &mr);
+        if (mrc == MB_E_RANGE) { LOG("SVC %#x outside the alias region %p+%#zx", num, a, size); regs[0] = 0xD401; return 0; }
+        if (mrc == MB_E_BUDGET) {
+            LOG("[mem] %sPhysicalMemory %p+%#zx refused: new %#llu used %#llu + new > app pool %#llu", num == 0x2C ? "Map" : "Unmap",
+                a, size, (unsigned long long)mr.new_bytes, (unsigned long long)mr.used_before, (unsigned long long)mr.limit);
+            regs[0] = 0x10801; return 0;
+        }
+        if (mrc != MB_OK) die("SVC %#x mprotect %p+%#zx errno=%d", num, a, size, errno);
         if (g_flag.svc) LOG("%sPhysicalMemory %p+%#zx", num == 0x2C ? "Map" : "Unmap", a, size);
-        // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region (iOS caps a single reservation at 6 GB)
+        // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region
         if (num == 0x2C) { static _Atomic uint64_t hw; uint64_t end = (uint64_t)(a + size - g_alias), old = atomic_load(&hw);
             while (end > old && !atomic_compare_exchange_weak(&hw, &old, end)) {}
             if (end > old && end >> 28 != old >> 28) LOG("[mem] alias region mapped up to +%.2f GB (alias region %.2f GB)", end / 1073741824.0, g_alias_cap / 1073741824.0); }
-        // Total actually mapped in the alias region (one line per 256 MB crossed, up or down): how much physical memory the game uses and whether it keeps growing. Counted with a page bitmap, only pages whose state really changed --
-        // the SDK maps pages that are already mapped and unmaps ranges larger than what it mapped (Engage unmaps 0x1000000 and then 0x103f000 at the same address), so counting requested sizes went negative
-        { static _Atomic int64_t prev; int64_t now = (int64_t)mb_alias(), before = atomic_exchange(&prev, now);
+        { static _Atomic int64_t prev; int64_t now = (int64_t)mr.alias_after, before = atomic_exchange(&prev, now);
           if (before >> 28 != now >> 28) LOG("[mem] alias region mapped %.2f GB (application pool %.2f GB)", now / 1073741824.0, APP_POOL / 1073741824.0); }
         regs[0] = 0; return 0;
     }
