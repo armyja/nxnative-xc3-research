@@ -4686,29 +4686,33 @@ static void psort_multi_report(const pso_key *k, const NvShader *vs, const NvSha
     if (st->mode != 1) return;
     int i = psm_find(st, fs ? fs->key : NULL);
     if (i < 0) return;
-    if (!g_psort_multi.valid[i]) {
-        MLOG("[psort] batch=1 key=%s note=missing-snapshot (no record, key stays armed)", st->k[i].key);
+    int gate = psm_snapshot_gate(st, i, g_psort_multi.valid[i]);
+    if (gate == 1) {
+        MLOG("[psort] batch=1 key=%s note=missing-snapshot (one note per key; no record, key stays armed)", st->k[i].key);
         return;
     }
+    if (gate != 2) return;
     uint8_t lm[8]; for (int j = 0; j < 8; j++) lm[j] = (uint8_t)k->lmap[j];
     uint32_t sig[PSM_SIG_WORDS]; psm_sig(sig, k->cfmt, g_pso_lmap != NULL, lm);
     int a = psm_accept(st, i, sig);
     if (a == 0 || a == -3) return;
     if (a == -1) { MLOG("[psort] batch=1 key=%s note=signature-limit coverage-capped (max 2 signatures per key)", st->k[i].key); return; }
     if (a == -2) { MLOG("[psort] batch=1 note=global-record-limit coverage-capped (12 records)"); return; }
-    int rec = st->global_records;
+    int rec = st->global_attempts;
     int assoc = g_psort_multi.serial[i] == g_pass.serial && !memcmp(k->cfmt, g_psort_multi.cfmt[i], sizeof k->cfmt);
     char cf[160]; size_t o = 0; cf[0] = 0;
     for (int j = 0; j < 8; j++) { int r = snprintf(cf + o, sizeof cf - o, "%s%u", j ? "," : "", k->cfmt[j]); if (r < 0 || (size_t)r >= sizeof cf - o) { cf[0] = 0; break; } o += (size_t)r; }
-    if (!cf[0]) { MLOG("[psort] batch=1 key=%s note=diagnostic-error (cfmt formatting)", st->k[i].key); psm_error(st, i); return; }
-    MLOG("[psort] batch=1 rec=%d key=%s fs=%s vs=%s frame=%llu pass=%llu assoc=%s snap=valid/%llu cfmt=%s dfmt=%u sfmt=%u ctx defer=%d fzchk=%d fz=%d phase=%d fsfn=%d ms=%d fzkind=%d",
-         rec, st->k[i].key, fs ? fs->key : "-", vs ? vs->key : "-", (unsigned long long)g_psort_multi.frame[i],
-         (unsigned long long)g_psort_multi.gpass[i], assoc ? "same-pass" : "mismatch", (unsigned long long)g_psort_multi.serial[i],
+    if (!cf[0]) { MLOG("[psort] batch=1 key=%s note=diagnostic-error (cfmt formatting; attempt consumed, not valid/complete)", st->k[i].key); psm_error(st, i); return; }
+    psm_fields hf; psm_fields_make(&hf, (uint64_t)atomic_load(&g_cur_frame), (uint64_t)g_stat_pass,
+                                   g_psort_multi.frame[i], g_psort_multi.gpass[i]);
+    MLOG("[psort] batch=1 rec=%d key=%s fs=%s vs=%s frame=%llu pass=%llu snapframe=%llu snappass=%llu assoc=%s snap=valid/%llu cfmt=%s dfmt=%u sfmt=%u ctx defer=%d fzchk=%d fz=%d phase=%d fsfn=%d ms=%d fzkind=%d",
+         rec, st->k[i].key, fs ? fs->key : "-", vs ? vs->key : "-", (unsigned long long)hf.frame, (unsigned long long)hf.pass,
+         (unsigned long long)hf.snap_frame, (unsigned long long)hf.snap_pass, assoc ? "same-pass" : "mismatch", (unsigned long long)g_psort_multi.serial[i],
          cf, k->dfmt, k->sfmt, g_defer_replaying, g_fz_checking, g_fz.active, g_fz.phase, k->fsfn != NULL, ms_fn != nil, g_pso_fz.kind);
     if (g_pso_lmap) {
         char mp[160]; size_t mo = 0; mp[0] = 0;
         for (int j = 0; j < 8; j++) { int r = snprintf(mp + mo, sizeof mp - mo, "%s%u", j ? "," : "", k->lmap[j]); if (r < 0 || (size_t)r >= sizeof mp - mo) { mp[0] = 0; break; } mo += (size_t)r; }
-        if (!mp[0]) { MLOG("[psort] batch=1 key=%s note=diagnostic-error (map formatting)", st->k[i].key); psm_error(st, i); return; }
+        if (!mp[0]) { MLOG("[psort] batch=1 key=%s note=diagnostic-error (map formatting; attempt consumed, not valid/complete)", st->k[i].key); psm_error(st, i); return; }
         MLOG("[psort] batch=1 rec=%d key=%s map enabled=1 physical->logical=%s", rec, st->k[i].key, mp);
     } else {
         MLOG("[psort] batch=1 rec=%d key=%s map enabled=0 physical->logical=identity (no merge: logical colour index = physical attachment index)", rec, st->k[i].key);
@@ -4725,7 +4729,7 @@ static void psort_multi_report(const pso_key *k, const NvShader *vs, const NvSha
                  q->mtl_type, q->pd_level, q->pd_slice, q->pd_depth_plane);
     }
     MLOG("[psort] batch=1 rec=%d key=%s done key=%s pass=%llu assoc=%s slots=8", rec, st->k[i].key, st->k[i].key,
-         (unsigned long long)g_psort_multi.gpass[i], assoc ? "same-pass" : "mismatch");
+         (unsigned long long)g_stat_pass, assoc ? "same-pass" : "mismatch");
 }
 static void psort_report(const pso_key *k, const NvShader *vs, const NvShader *fs, id<MTLFunction> ms_fn) {
     if (!(g_psort.mode == 1 && psort_match(fs ? fs->key : NULL))) { psort_multi_report(k, vs, fs, ms_fn); return; }

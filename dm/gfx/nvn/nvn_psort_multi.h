@@ -13,16 +13,17 @@
 typedef struct {
     char key[17];
     uint32_t sig[PSM_MAX_SIGS][PSM_SIG_WORDS];
-    int nrec;
+    int nattempts;               // conservative record-attempt budget: a formatting failure already counted
     int done;                    // terminal (limit note / diagnostic error / global cap)
     int cached_note;
     int limit_note;
+    int missing_note;
 } psm_key;
 
 typedef struct {
     int mode;                    // 0 off, 1 armed, 2 closed
     int n;
-    int global_records;
+    int global_attempts;         // total attempts, including the one that later fails formatting
     int global_note;
     psm_key k[PSM_MAX_KEYS];
 } psm_state;
@@ -70,7 +71,7 @@ static inline int psm_parse(psm_state *st, const char *single, const char *multi
 static inline void psm_sig(uint32_t out[PSM_SIG_WORDS], const uint32_t cfmt[8], int map_enabled, const uint8_t lmap[8]) {
     for (int i = 0; i < 8; i++) out[i] = cfmt[i];
     out[8] = map_enabled ? 1u : 0u;
-    for (int i = 0; i < 8; i++) out[9 + i] = lmap[i];
+    for (int i = 0; i < 8; i++) out[9 + i] = map_enabled ? lmap[i] : 0u;   // enabled=0 is canonical identity; lmap bytes are not part of the signature
 }
 
 // Returns 1 for a new record, 0 for a silent duplicate, -1 for the per-key third-signature limit, -2 for the global
@@ -79,11 +80,12 @@ static inline int psm_accept(psm_state *st, int i, const uint32_t sig[PSM_SIG_WO
     if (st->mode != 1 || i < 0 || i >= st->n) return -3;
     psm_key *k = &st->k[i];
     if (k->done) return -3;
-    if (k->nrec >= PSM_MAX_SIGS) {
+    for (int s = 0; s < k->nattempts; s++) if (!memcmp(k->sig[s], sig, sizeof(uint32_t) * PSM_SIG_WORDS)) return 0;   // duplicates never hit a quota/note
+    if (k->nattempts >= PSM_MAX_SIGS) {
         if (!k->limit_note) { k->limit_note = 1; k->done = 1; return -1; }
         return -3;
     }
-    if (st->global_records >= PSM_MAX_RECORDS) {
+    if (st->global_attempts >= PSM_MAX_RECORDS) {
         if (!st->global_note) {
             st->global_note = 1;
             for (int j = 0; j < st->n; j++) st->k[j].done = 1;
@@ -91,10 +93,19 @@ static inline int psm_accept(psm_state *st, int i, const uint32_t sig[PSM_SIG_WO
         }
         return -3;
     }
-    for (int s = 0; s < k->nrec; s++) if (!memcmp(k->sig[s], sig, sizeof(uint32_t) * PSM_SIG_WORDS)) return 0;
-    memcpy(k->sig[k->nrec], sig, sizeof(uint32_t) * PSM_SIG_WORDS);
-    k->nrec++;
-    st->global_records++;
+    memcpy(k->sig[k->nattempts], sig, sizeof(uint32_t) * PSM_SIG_WORDS);
+    k->nattempts++;
+    st->global_attempts++;
+    return 1;
+}
+
+// Snapshot gate used by the renderer before any record accounting: 1 = emit the one missing-snapshot note,
+// 0 = skip silently (already noted), 2 = snapshot valid and recording may proceed. No quota is touched.
+static inline int psm_snapshot_gate(psm_state *st, int i, int valid) {
+    if (st->mode != 1 || i < 0 || i >= st->n || st->k[i].done) return 0;
+    if (valid) return 2;
+    if (st->k[i].missing_note) return 0;
+    st->k[i].missing_note = 1;
     return 1;
 }
 
@@ -107,6 +118,11 @@ static inline int psm_cached_note(psm_state *st, int i) {
 
 static inline void psm_error(psm_state *st, int i) {
     if (st->mode == 1 && i >= 0 && i < st->n) st->k[i].done = 1;
+}
+
+typedef struct { uint64_t frame, pass, snap_frame, snap_pass; } psm_fields;
+static inline void psm_fields_make(psm_fields *f, uint64_t cur_frame, uint64_t cur_pass, uint64_t snap_frame, uint64_t snap_pass) {
+    f->frame = cur_frame; f->pass = cur_pass; f->snap_frame = snap_frame; f->snap_pass = snap_pass;
 }
 
 static inline int psm_find(const psm_state *st, const char *fs_key) {
