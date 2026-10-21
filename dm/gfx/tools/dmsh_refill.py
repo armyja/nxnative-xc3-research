@@ -15,8 +15,10 @@ Rules this tool keeps, because getting them wrong silently corrupts a library:
   left unpaired.
 * A shader that exists only as a runtime dump never gets a pair invented for it: the dump carries no draw context, so
   a pair would be a guess. Runtime pairs must come from reviewed evidence (see dmsh_pairs_from_log.py), not from here.
-* Every output is written to a temporary directory and validated before the profile is touched, so a failure never
-  leaves a half-updated map, pairs file or package directory.
+* Validation happens before anything is written, and a refusal changes nothing. Publishing is a recoverable sequence,
+  not a cross-file transaction: packages first (unique names, so removing what this run added undoes them), then the
+  map and the pairs through a temporary file each with the previous contents kept in memory. If a rename fails the
+  previous tables are written back; if even that fails the run says so instead of claiming success.
 * The profile named by --profile must be the one DM_GAME/DM_GAMES_DIR resolve to. Otherwise the map would be written
   into a profile the chain/build never reads, so that is refused before anything is written.
 
@@ -53,13 +55,25 @@ def skey(ctl, code):
 def check(ctl, code):
     if len(ctl) < 0x880 or ctl[:4] != CTL_MAGIC: return 'bad control section'
     if len(ctl) < ctl_len(ctl): return 'control shorter than its own length field'
+    if not code: return 'empty code area'
     if struct.unpack_from('<I', ctl, 0x704)[0] != len(code): return 'control +0x704 does not match the code length'
     return None
 
 
-def stage_of(ctl):
-    v = ctl[0x714]
-    return STAGE_BYTE.get(v)
+def code_stage(code):
+    """The stage the code area itself declares, read the way the production parser reads it (spch._stage_of):
+    compute shaders by their magic, graphics shaders by the SPH header's stage bits. None when it is not a stage this
+    project can name."""
+    if len(code) < 0x34: return None
+    try:
+        return spch._stage_of(code, '0', 'refill', '0', '0')
+    except Exception:
+        return None
+
+
+def ctl_stage_hint(ctl):
+    """The empirical control byte, kept only as a cross-check: 0 = vertex, 1 = pixel, anything else unknown."""
+    return STAGE_BYTE.get(ctl[0x714])
 
 
 # ---------------------------------------------------------------- inputs
@@ -151,7 +165,9 @@ def package_verify(blob, key, stage):
     why = check(ctl, code)
     if why: return why
     if skey(ctl, code) != key: return 'package key does not recompute'
-    if stage and stage_of(ctl) != stage: return f'package stage byte {ctl[0x714]} is not {stage}'
+    cs = code_stage(code)
+    if cs is None: return 'code area does not declare a stage this project knows'
+    if stage and cs != stage: return f'code stage {cs} is not {stage}'
     return None
 
 
@@ -179,65 +195,145 @@ def resolve_profile(arg):
     return want
 
 
+MAP_STAGE = {'vertex': 'vs', 'pixel': 'ps', 'compute': 'cs'}
+
+
+def validate_map(map_path, pkgdir):
+    """Every row of an existing map, checked against the package it names: the whole map, not just the keys.
+
+    A row is accepted only when the file exists, the offset is inside it, and the bytes hash back to the row's key with
+    the stage its own code area declares. Rows that share one file+offset with different keys are a corruption signal.
+    """
+    keys, problems, seen = set(), [], {}
+    if not os.path.exists(map_path): return keys, problems
+    for n, ln in enumerate(open(map_path), 1):
+        if ln.startswith('#') or not ln.strip(): continue
+        c = ln.rstrip('\n').split('\t')
+        if len(c) < 5: problems.append(f'row {n}: expected 5 columns, got {len(c)}'); continue
+        fn, off_s, stage_col, key, _src = c[0], c[1], c[2], c[3], c[4]
+        stage = MAP_STAGE.get(stage_col)
+        if stage is None: problems.append(f'row {n}: unknown stage column {stage_col!r}'); continue
+        try: off = int(off_s)
+        except ValueError: problems.append(f'row {n}: offset {off_s!r} is not a number'); continue
+        path = os.path.join(pkgdir, fn)
+        if not os.path.exists(path): problems.append(f'row {n}: package {fn} is missing'); continue
+        blob = open(path, 'rb').read()
+        if off < 0 or off >= len(blob): problems.append(f'row {n}: offset {off} outside {fn} ({len(blob)} bytes)'); continue
+        why = package_verify(blob[off:], key, stage)
+        if why: problems.append(f'row {n}: {key} in {fn}@{off}: {why}'); continue
+        prev = seen.setdefault((fn, off), key)
+        if prev != key: problems.append(f'row {n}: {fn}@{off} is claimed by {prev} and {key}')
+        keys.add(key)
+    return keys, problems
+
+
+def validate_pairs(pairs_path, keys):
+    problems = []
+    if not os.path.exists(pairs_path): return problems
+    for n, ln in enumerate(open(pairs_path), 1):
+        if ln.startswith('#') or not ln.strip(): continue
+        c = ln.split()
+        if len(c) < 2: problems.append(f'pairs row {n}: expected two keys'); continue
+        if c[0] not in keys or c[1] not in keys:
+            problems.append(f'pairs row {n}: {c[0]} {c[1]} references a key the map does not verify')
+    return problems
+
+
 # ---------------------------------------------------------------- selftest
 def selftest():
-    """Exercise the rules on synthetic data: no game files, no compiler, no containers."""
+    """Exercise the rules on synthetic data shaped like the real formats: no game files, no compiler, no containers."""
     fail = []
     def want(cond, what):
         if not cond: fail.append(what)
 
-    def synth(stage_byte, salt):
+    def synth(stage, salt, tail=b''):
+        """A control section and a code area with a real SPH header (magic + stage bits), so the checks under test see
+        the format they will see in production rather than eight arbitrary bytes."""
         ctl = bytearray(0x880); ctl[0:4] = CTL_MAGIC
-        struct.pack_into('<I', ctl, 0x20, 0x880); struct.pack_into('<I', ctl, 0x704, 8)
-        ctl[0x714] = stage_byte
-        code = bytes([salt]) * 8
+        struct.pack_into('<I', ctl, 0x20, 0x880)
+        code = bytearray(0x40) + bytearray(tail)
+        if stage == 'cs':
+            code[0:4] = CS_MAGIC
+        else:
+            code[0:4] = GFX_MAGIC
+            bit = {'vs': 1, 'hs': 2, 'ds': 3, 'gs': 4, 'ps': 5}[stage]
+            struct.pack_into('<I', code, 0x30, bit << 10)
+        struct.pack_into('<I', ctl, 0x704, len(code))
+        ctl[0x714] = {'vs': 0, 'ps': 1}.get(stage, 2)
         ctl[0x800] = salt
-        return bytes(ctl), code
+        return bytes(ctl), bytes(code)
 
-    # 1. two dump-only VS and two PS: four distinct packages, correct hashes, no invented pair
+    # 1. packages carry the key in their name, verify, and dump-only shaders never invent a pair
     dumps = {}
-    for i, sb in enumerate((0, 0, 1, 1)):
-        ctl, code = synth(sb, 10 + i); dumps[skey(ctl, code)] = (ctl, code)
+    for i, sb in enumerate(('vs', 'vs', 'ps', 'ps')):
+        ctl, code = synth(sb, 10 + i); dumps[skey(ctl, code)] = (ctl, code, sb)
     want(len(dumps) == 4, 'four synthetic dumps should have four distinct keys')
-    names = set()
-    for k, (ctl, code) in dumps.items():
-        st = stage_of(ctl)
-        blob = package_bytes(ctl, code)
-        want(package_verify(blob, k, st) is None, f'package for {k} should verify')
-        names.add(package_name(st, k, None))
+    names = {package_name(st, k, None) for k, (ctl, code, st) in dumps.items()}
     want(len(names) == 4, 'dump-only packages must have four distinct names')
-    want(strict_pairs([]) [0] == set(), 'no entries must not produce pairs')
+    for k, (ctl, code, st) in dumps.items():
+        want(package_verify(package_bytes(ctl, code), k, st) is None, f'package for {k} should verify')
+    want(strict_pairs([])[0] == set(), 'no entries must not produce pairs')
 
-    # 2. strict pairing only for an ordered [vs, ps] of one program
-    v = Entry('c.wishp', '1', '2', '0', 'vs', *synth(0, 1))
-    p = Entry('c.wishp', '1', '2', '1', 'ps', *synth(1, 2))
-    g = Entry('c.wishp', '1', '2', '1', 'gs', *synth(2, 3))
-    pr, _ = strict_pairs([v, p]); want(pr == {(v.key, p.key)}, '[vs, ps] should pair')
-    pr, why = strict_pairs([v, g]); want(pr == set(), 'a [vs, gs] program must not pair')
-    pr, why = strict_pairs([v, g, p]); want(pr == set() and 'gs' in ''.join(why.values()), '[vs, gs, ps] must not pair')
-    pr, why = strict_pairs([v, p, Entry('c.wishp', '1', '2', '2', 'ps', *synth(1, 4))])
+    # 2. the code area decides the stage; the control byte is only a cross-check
+    bad_ctl, _ = synth('vs', 1)
+    _, bad_code = synth('vs', 1); bad_code = b'BADCODE!' + bad_code[8:]
+    want(code_stage(bad_code) is None, 'a code area with a bad magic declares no stage')
+    want(package_verify(package_bytes(bad_ctl, bad_code), skey(bad_ctl, bad_code), 'vs') is not None,
+         'the supervisor counterexample (valid control, +0x704 = 8, code BADCODE!) must be refused')
+    short_ctl, _ = synth('vs', 2); short_ctl = bytearray(short_ctl); short_code = b'\x78\x56\x34\x12'
+    struct.pack_into('<I', short_ctl, 0x704, len(short_code))
+    want(package_verify(package_bytes(short_ctl, short_code), skey(short_ctl, short_code), 'vs') is not None,
+         'a code area shorter than an SPH header must be refused')
+    empty_ctl, _ = synth('vs', 3); empty_ctl = bytearray(empty_ctl)
+    struct.pack_into('<I', empty_ctl, 0x704, 0)
+    want(package_verify(package_bytes(empty_ctl, b''), skey(empty_ctl, b''), 'vs') is not None,
+         'an empty code area must be refused')
+    v_ctl, v_code = synth('vs', 4); p_ctl, p_code = synth('ps', 5)
+    want(package_verify(package_bytes(v_ctl, v_code), skey(v_ctl, v_code), 'ps') is not None,
+         'a vertex code area declared as pixel must be refused')
+    # compute is a real stage: it verifies as cs and is refused when declared as something else
+    c_ctl, c_code = synth('cs', 6)
+    want(code_stage(c_code) == 'cs', 'a compute code area declares cs')
+    want(package_verify(package_bytes(c_ctl, c_code), skey(c_ctl, c_code), 'cs') is None,
+         'a compute package must verify when it is declared compute')
+    want(package_verify(package_bytes(c_ctl, c_code), skey(c_ctl, c_code), 'ps') is not None,
+         'a compute package declared as pixel must be refused')
+    want(ctl_stage_hint(c_ctl) is None, 'the empirical control byte does not name compute')
+
+    # 3. strict pairing: one ordered [vs, ps] of one program, nothing else
+    v = Entry('c.wishp', '1', '2', '0', 'vs', *synth('vs', 1))
+    p = Entry('c.wishp', '1', '2', '1', 'ps', *synth('ps', 2))
+    g = Entry('c.wishp', '1', '2', '1', 'gs', *synth('gs', 3))
+    want(strict_pairs([v, p])[0] == {(v.key, p.key)}, '[vs, ps] should pair')
+    want(strict_pairs([v, g])[0] == set(), 'a [vs, gs] program must not pair')
+    pr, why = strict_pairs([v, g, p])
+    want(pr == set() and 'gs' in ''.join(why.values()), '[vs, gs, ps] must not pair')
+    pr, why = strict_pairs([v, p, Entry('c.wishp', '1', '2', '2', 'ps', *synth('ps', 4))])
     want(pr == set() and 'duplicate' in ''.join(why.values()), 'duplicate stage must be refused, not merged')
-    pr, _ = strict_pairs([v, p, Entry('d.wishp', '1', '2', '1', 'ps', *synth(1, 5))])
-    want(pr == {(v.key, p.key)}, 'entries of another container must not join this program')
+    want(strict_pairs([v, p, Entry('d.wishp', '1', '2', '1', 'ps', *synth('ps', 5))])[0] == {(v.key, p.key)},
+         'entries of another container must not join this program')
 
-    # 3. a tampered package must be caught
-    blob = bytearray(package_bytes(*dumps[list(dumps)[0]]))
-    blob[0x40] ^= 0xff
-    want(package_verify(bytes(blob), list(dumps)[0], None) is not None, 'tampered package must not verify')
+    # 4. a tampered package is caught
+    k0 = list(dumps)[0]
+    blob = bytearray(package_bytes(*dumps[k0][:2])); blob[0x41] ^= 0xff
+    want(package_verify(bytes(blob), k0, None) is not None, 'tampered package must not verify')
 
-    # 4. profile mismatch is refused
-    os.environ.setdefault('DM_GAME', '010074F013262000')
-    os.environ['DM_GAMES_DIR'] = tempfile.mkdtemp()
+    # 5. profile mismatch is refused
+    root0 = tempfile.mkdtemp(prefix='refill-prof-')
+    old_env = {k: os.environ.get(k) for k in ('DM_GAME', 'DM_GAMES_DIR')}
     try:
-        resolve_profile(os.path.join(os.environ['DM_GAMES_DIR'], '010074F013262000'))
-        resolve_profile(os.path.join(os.environ['DM_GAMES_DIR'], 'somewhere_else'))
-        fail.append('a profile other than DM_GAMES_DIR/DM_GAME must be refused')
-    except Refuse:
-        pass
+        os.environ['DM_GAME'] = 'TESTGAME'; os.environ['DM_GAMES_DIR'] = root0
+        resolve_profile(os.path.join(root0, 'TESTGAME'))
+        try:
+            resolve_profile(os.path.join(root0, 'somewhere_else')); fail.append('a profile other than DM_GAMES_DIR/DM_GAME must be refused')
+        except Refuse: pass
     finally:
-        shutil.rmtree(os.environ['DM_GAMES_DIR'], ignore_errors=True)
+        for k, v_ in old_env.items():
+            if v_ is None: os.environ.pop(k, None)
+            else: os.environ[k] = v_
+        shutil.rmtree(root0, ignore_errors=True)
 
-    # 5. the real CLI, end to end, without a compiler: four dump-only shaders, then an incremental round
+    # 6. the real CLI, end to end, without a compiler
     root = tempfile.mkdtemp(prefix='refill-cli-')
     try:
         prof = os.path.join(root, 'profile', 'TESTGAME'); os.makedirs(prof)
@@ -245,39 +341,63 @@ def selftest():
         open(os.path.join(prof, 'shader_map.tsv'), 'w').write('# file\toffset\tstage\tkey\tsource\n')
         open(os.path.join(prof, 'shader_pairs.tsv'), 'w').write('# vs ps\n')
         empty = os.path.join(root, 'containers'); os.makedirs(empty)
-        dumps = os.path.join(root, 'shdump'); os.makedirs(dumps)
-        made = []
-        for i, sb in enumerate((0, 0, 1, 1)):
-            ctl, code = synth(sb, 20 + i); k = skey(ctl, code); made.append(k)
-            open(os.path.join(dumps, k + '.ctl'), 'wb').write(ctl)
-            open(os.path.join(dumps, k + '.code'), 'wb').write(code)
+        dumps_dir = os.path.join(root, 'shdump'); os.makedirs(dumps_dir)
         env = dict(os.environ, DM_GAME='TESTGAME', DM_GAMES_DIR=os.path.join(root, 'profile'))
-        cmd = [sys.executable, os.path.abspath(__file__), '--dumps', dumps, '--containers', empty,
+        cmd = [sys.executable, os.path.abspath(__file__), '--dumps', dumps_dir, '--containers', empty,
                '--profile', prof, '--pkg', os.path.join(root, 'pkg'), '--out', os.path.join(root, 'out'),
                '--allow-dump-only', '--no-build']
+
+        def put(stage, salt):
+            ctl, code = synth(stage, salt); k = skey(ctl, code)
+            open(os.path.join(dumps_dir, k + '.ctl'), 'wb').write(ctl)
+            open(os.path.join(dumps_dir, k + '.code'), 'wb').write(code)
+            return k
+
+        made = [put('vs', 20), put('vs', 21), put('ps', 22), put('ps', 23)]
         r = subprocess.run(cmd, env=env, capture_output=True, text=True)
         want(r.returncode == 0, f'CLI run should succeed, got {r.returncode}: {r.stdout[-300:]}')
         rows = [ln.split('\t') for ln in open(os.path.join(prof, 'shader_map.tsv')) if not ln.startswith('#')]
         want(len(rows) == 4, f'four map rows expected, got {len(rows)}')
         want(len({x[0] for x in rows}) == 4, 'four map rows must name four different packages')
         want(all(any(x[3] == k for x in rows) for k in made), 'every synthetic key must have a map row')
-        for fn, _off, _st, k, _src in rows:
-            blob = open(os.path.join(root, 'pkg', fn), 'rb').read()
-            want(package_verify(blob, k, None) is None, f'CLI package {fn} must verify for {k}')
+        for fn, off, st, k, src in rows:
+            want(package_verify(open(os.path.join(root, 'pkg', fn), 'rb').read()[int(off):], k, None) is None,
+                 f'CLI package {fn} must verify for {k}')
         want(open(os.path.join(prof, 'shader_pairs.tsv')).read().strip() == '# vs ps',
              'dump-only shaders must not produce pairs')
-        before = {x[0]: os.path.getsize(os.path.join(root, 'pkg', x[0])) for x in rows}
-        # incremental: a fifth shader must be added, the four existing packages untouched
-        ctl, code = synth(0, 30); k5 = skey(ctl, code)
-        open(os.path.join(dumps, k5 + '.ctl'), 'wb').write(ctl)
-        open(os.path.join(dumps, k5 + '.code'), 'wb').write(code)
+        before = {x[0]: hashlib.sha256(open(os.path.join(root, 'pkg', x[0]), 'rb').read()).hexdigest() for x in rows}
+        k5 = put('vs', 30)
         r = subprocess.run(cmd, env=env, capture_output=True, text=True)
         want(r.returncode == 0, 'incremental CLI run should succeed')
         rows2 = [ln.split('\t') for ln in open(os.path.join(prof, 'shader_map.tsv')) if not ln.startswith('#')]
         want(len(rows2) == 5, f'five map rows after the incremental round, got {len(rows2)}')
-        want(all(os.path.getsize(os.path.join(root, 'pkg', fn)) == sz for fn, sz in before.items()),
-             'existing packages must not be rewritten')
-        # a profile the build does not read must be refused and left untouched
+        want(all(hashlib.sha256(open(os.path.join(root, 'pkg', fn), 'rb').read()).hexdigest() == h
+                 for fn, h in before.items()), 'existing packages must not change, byte for byte')
+
+        # a map row that does not verify must stop the run before anything is written
+        map_p = os.path.join(prof, 'shader_map.tsv')
+        good = open(map_p).read()
+        open(map_p, 'w').write(good + 'ps_runtime_deadbeefdeadbeef.bin\t0\tpixel\tdeadbeefdeadbeef\truntime_dump#deadbeefdeadbeef:ps\n')
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        want(r.returncode == 2 and open(map_p).read().endswith('deadbeefdeadbeef:ps\n'), 'a bad existing row must be refused')
+        want(open(os.path.join(prof, 'shader_pairs.tsv')).read().strip() == '# vs ps', 'a refusal must not touch pairs')
+        open(map_p, 'w').write(good)
+        # a package with the same name but different bytes must be refused, not overwritten
+        rows = [ln.split('\t') for ln in open(map_p) if not ln.startswith('#')]
+        victim = os.path.join(root, 'pkg', rows[0][0])
+        keep = open(victim, 'rb').read()
+        open(victim, 'wb').write(b'X' * len(keep))
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        want(r.returncode == 2, 'a same-named package with different bytes must be refused')
+        open(victim, 'wb').write(keep)
+        # the publish path: an injected failure between the two renames must leave the profile as it was
+        map_before, pairs_before = open(map_p).read(), open(os.path.join(prof, 'shader_pairs.tsv')).read()
+        put('ps', 31)
+        r = subprocess.run(cmd, env=dict(env, DM_REFILL_TEST_FAIL='pairs'), capture_output=True, text=True)
+        want(r.returncode == 3, f'injected publish failure should report rc 3, got {r.returncode}')
+        want(open(map_p).read() == map_before, 'the map must be recovered after a failed publish')
+        want(open(os.path.join(prof, 'shader_pairs.tsv')).read() == pairs_before, 'pairs must be untouched after a failed publish')
+        # a --profile the build does not read is refused before writing
         other = os.path.join(root, 'other'); os.makedirs(other)
         open(os.path.join(other, 'shader_map.tsv'), 'w').write('# untouched\n')
         i = cmd.index('--profile')
@@ -316,10 +436,17 @@ def main():
 
     map_path = os.path.join(profile, 'shader_map.tsv')
     pairs_path = os.path.join(profile, 'shader_pairs.tsv')
-    have, have_pairs = set(), set()
-    for ln in open(map_path):
-        c = ln.rstrip('\n').split('\t')
-        if not ln.startswith('#') and len(c) > 4: have.add(c[3])
+    have, map_problems = validate_map(map_path, a.pkg)
+    if map_problems:
+        print(f'refused: the existing map has {len(map_problems)} row(s) that do not verify; not writing anything')
+        for p_ in map_problems[:8]: print(f'  {p_}')
+        return 2
+    pair_problems = validate_pairs(pairs_path, have)
+    if pair_problems:
+        print(f'refused: the existing pairs file has {len(pair_problems)} entr(ies) that do not verify; not writing anything')
+        for p_ in pair_problems[:8]: print(f'  {p_}')
+        return 2
+    have_pairs = set()
     if os.path.exists(pairs_path):
         for ln in open(pairs_path):
             if ln.strip() and not ln.startswith('#'): have_pairs.add(tuple(ln.split()[:2]))
@@ -327,19 +454,28 @@ def main():
     entries, skipped = scan_containers(a.containers)
     for n, why in skipped: print(f'  container {n}: skipped ({why})')
     idx, conflict = index_entries(entries)
-    for k, (a1, a2) in conflict.items(): print(f'  [WARN] key {k} appears twice with different bytes: {a1} vs {a2}')
+    for k, (a1, a2) in conflict.items():
+        print(f'  [REFUSE] key {k} appears twice in the containers with different bytes: {a1} vs {a2}')
     pair_set, unpairable = strict_pairs(entries)
 
     new, no_source, refused = {}, {}, {}
     for k, (ctl, code) in dumps.items():
         if k in have: continue
         hit = idx.get(k)
+        if k in conflict:
+            refused[k] = 'the containers declare this key twice with different bytes'
+            continue
         if not hit:
             if not a.allow_dump_only: no_source[k] = 'not in any container sample'; continue
-            st = stage_of(ctl)
-            if st is None:
-                no_source[k] = f'no container and control 0x714 = {ctl[0x714]} (not 0/1): stage unknown, not guessed'
-                print(f'  [WARN] {k}: control 0x714 = {ctl[0x714]}, expected 0 (vs) or 1 (ps); left out instead of guessing')
+            st = code_stage(code)
+            if st not in ('vs', 'ps'):
+                no_source[k] = f'no container and the code area declares {st or "no known stage"}: not guessed'
+                print(f'  [WARN] {k}: no container, code stage {st}; left out instead of guessing')
+                continue
+            # the control byte is only a cross-check here, never the proof of the stage
+            hint = ctl_stage_hint(ctl)
+            if hint is not None and hint != st:
+                refused[k] = f'code says {st} but control +0x714 says {hint}: refusing rather than choosing'
                 continue
             new[k] = dict(entry=None, stage=st, ctl=ctl, code=code)
             continue
@@ -347,6 +483,18 @@ def main():
         if hit.stage not in STAGE_COL: refused[k] = f'unsupported stage {hit.stage}'; continue
         why = check(hit.ctl, hit.code)
         if why: refused[k] = f'container entry does not validate: {why}'; continue
+        if code_stage(hit.code) != hit.stage:
+            refused[k] = f'container says {hit.stage} but its code area says {code_stage(hit.code)}'; continue
+        # the container entry and the runtime dump must describe the same code; only the control tail may differ, because
+        # the key covers ctl[:ctl_len] and nothing else
+        if hit.code != code:
+            refused[k] = 'container code bytes differ from the runtime dump'
+            continue
+        if hit.ctl[:ctl_len(hit.ctl)] != ctl[:ctl_len(ctl)]:
+            refused[k] = 'container control bytes differ from the runtime dump'
+            continue
+        if hit.ctl != ctl:
+            print(f'  note {k}: control tail beyond +{ctl_len(ctl):#x} differs from the runtime dump (not hashed); container bytes kept')
         new[k] = dict(entry=hit, stage=hit.stage, ctl=hit.ctl, code=hit.code)
 
     print(f'already in map: {len(have)}; new buildable: {len(new)}; no source: {len(no_source)}; refused: {len(refused)}')
@@ -367,6 +515,7 @@ def main():
         print('dry run or nothing to add: nothing written, library not rebuilt'); return 0
 
     tmp = tempfile.mkdtemp(prefix='refill-')
+    created, map_old, pairs_old = [], None, None
     try:
         rows, placed = [], {}
         for k, v in sorted(new.items()):
@@ -374,35 +523,63 @@ def main():
             why = package_verify(blob, k, v['stage'])
             if why: raise Refuse(f'package for {k} failed verification: {why}')
             fn = package_name(v['stage'], k, v['entry'])
+            if fn in placed and placed[fn] != blob: raise Refuse(f'two different shaders want the package name {fn}')
+            placed[fn] = blob
             open(os.path.join(tmp, fn), 'wb').write(blob)
             rows.append((fn, k, v['stage'],
                          f"{v['entry'].container}#{v['entry'].si}:{v['entry'].pi}:{v['entry'].ei}:{v['entry'].stage}"
-                         if v['entry'] else f'runtime_dump#{k}:{v["stage"]}'))
-            placed[fn] = blob
-        # a pair may only be written when both ends are in the final map and both came from one program
+                         if v['entry'] else f"runtime_dump#{k}:{v['stage']}"))
         new_pairs = []
         for vs, ps in sorted(pair_set):
             if vs in new or ps in new:
                 if vs not in (have | set(new)) or ps not in (have | set(new)):
                     raise Refuse(f'pair {vs} {ps} would reference a key missing from the map')
                 new_pairs.append((vs, ps))
-        # no existing package may be silently replaced by different bytes
+        # pre-check every target before touching the profile: a package may not be replaced by different bytes
         os.makedirs(a.pkg, exist_ok=True)
         for fn, blob in placed.items():
             dst = os.path.join(a.pkg, fn)
             if os.path.exists(dst) and open(dst, 'rb').read() != blob:
                 raise Refuse(f'{dst} already exists with different bytes')
-        for fn, blob in placed.items(): shutil.copyfile(os.path.join(tmp, fn), os.path.join(a.pkg, fn))
+        # publish: packages first (unique names, so a failure can be undone by removing what we created), then the two
+        # tables through a temporary file each, with the previous contents kept in memory so a failed rename can put
+        # them back. This is a recoverable sequence, not a cross-file filesystem transaction.
+        for fn in placed:
+            dst = os.path.join(a.pkg, fn); tmp_dst = dst + f'.tmp{os.getpid()}'
+            shutil.copyfile(os.path.join(tmp, fn), tmp_dst); os.replace(tmp_dst, dst); created.append(dst)
+        map_old = open(map_path).read() if os.path.exists(map_path) else ''
+        pairs_old = open(pairs_path).read() if os.path.exists(pairs_path) else ''
         map_add = ''.join(f"{fn}\t0\t{STAGE_COL[st]}\t{k}\t{src}\n" for fn, k, st, src in rows)
-        with open(map_path + '.tmp', 'w') as f:
-            f.write(open(map_path).read()); f.write(map_add)
         np_add = ''.join(f'{x} {y}\n' for x, y in new_pairs if (x, y) not in have_pairs)
-        with open(pairs_path + '.tmp', 'w') as f:
-            f.write(open(pairs_path).read() if os.path.exists(pairs_path) else ''); f.write(np_add)
-        os.replace(map_path + '.tmp', map_path); os.replace(pairs_path + '.tmp', pairs_path)
+        mt, pt = map_path + f'.tmp{os.getpid()}', pairs_path + f'.tmp{os.getpid()}'
+        open(mt, 'w').write(map_old + map_add)
+        open(pt, 'w').write(pairs_old + np_add)
+        os.replace(mt, map_path)
+        if os.environ.get('DM_REFILL_TEST_FAIL') == 'pairs':      # test hook: prove the rollback path runs
+            raise OSError('injected failure between the two renames')
+        try:
+            os.replace(pt, pairs_path)
+        except OSError:
+            open(map_path, 'w').write(map_old)                    # put the map back before reporting the failure
+            raise
         print(f'packaged {len(rows)} records, {len(new_pairs)} pairs')
     except Refuse as e:
-        print(f'refused: {e} (nothing written)'); return 2
+        for f_ in created:
+            try: os.unlink(f_)
+            except OSError: pass
+        print(f'refused: {e} (profile left as it was)'); return 2
+    except OSError as e:
+        for f_ in created:
+            try: os.unlink(f_)
+            except OSError: pass
+        if map_old is not None:
+            try: open(map_path, 'w').write(map_old)
+            except OSError: print(f'  [RED] could not restore {map_path}; it may hold the new rows')
+        if pairs_old is not None:
+            try: open(pairs_path, 'w').write(pairs_old)
+            except OSError: print(f'  [RED] could not restore {pairs_path}')
+        print(f'publish failed: {e}; put the previous map and pairs back, removed the packages this run added')
+        return 3
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
