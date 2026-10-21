@@ -89,6 +89,10 @@ HLE_FORCE("_ZN2nn2oe23GetPreviousProgramIndexEv", "previous program index: launc
 HLE_FORCE("_ZN2nn2oe16DisableRecordingEv", "video recording switch; the host has no system recording", void, h_oe_DisableRec, void) {}
 HLE_FORCE("_ZN2nn2oe16EnableScreenShotEv", "screenshot switch; the host has no system screenshot", void, h_oe_EnableShot, void) {}
 HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "screenshot switch; the host has no system screenshot", void, h_oe_DisableShot, void) {}
+// Album image-taken notification switch (SDK side it goes through am::GetSelfController; XC3 calls it during startup and the
+//   host has no am, so the controller was null). The host has no Horizon album notification source, so enabling the
+//   notification needs no am session and nothing has to be delivered: a no-op, not an am implementation
+HLE_FORCE("_ZN2nn2oe33EnableAlbumImageTakenNotificationEv", "album image-taken notification; the host has no album notification source", void, h_oe_AlbumTaken, void) {}
 // Super Mario Odyssey: HOME button blocking around its own menus, screenshot orientation, and the auto-sleep query (all through am)
 HLE_FORCE("_ZN2nn2oe23BeginBlockingHomeButtonEv", "temporarily block the HOME button (through am); the host has no HOME button", void, h_oe_BlockHome, void) {}
 HLE_FORCE("_ZN2nn2oe21EndBlockingHomeButtonEv", "restore the HOME button (through am)", void, h_oe_UnblockHome, void) {}
