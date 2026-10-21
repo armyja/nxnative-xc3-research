@@ -55,6 +55,12 @@ int main(void) {
     CHECK(map(0, room) == MB_OK && mb_used() == BUDGET);
     CHECK(map(0, room) == MB_OK && r.new_bytes == 0 && mb_used() == BUDGET);
 
+    // the snapshot carries the heap before and after, which is what decides "is this a growth" for the log
+    mb_init(CAP, BUDGET, FIXED);
+    CHECK(r.heap_before == 0 && heap(8 * 1024 * 1024) == MB_OK && r.heap_before == 0 && r.heap_after == 8 * 1024 * 1024);
+    CHECK(heap(4 * 1024 * 1024) == MB_OK && r.heap_before == 8 * 1024 * 1024 && r.heap_after == 4 * 1024 * 1024);
+    CHECK(heap(4 * 1024 * 1024) == MB_OK && r.heap_before == 4 * 1024 * 1024 && r.heap_after == 4 * 1024 * 1024);
+
     // heap and alias share the pool
     mb_init(CAP, BUDGET, FIXED);
     CHECK(heap(8 * 1024 * 1024) == MB_OK && mb_used() == FIXED + 8 * 1024 * 1024);

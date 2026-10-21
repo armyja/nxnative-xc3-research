@@ -119,7 +119,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         if (hrc == MB_E_CAP) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD401; return 0; }
         if (hrc != MB_OK) { LOG("SetHeapSize %#zx: mprotect failed errno=%d, heap unchanged at %#zx", size, errno, (size_t)hr.heap_after); regs[0] = 0xD401; return 0; }
         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p", size, g_heap);
-        else if (size > hr.used_before - mb_alias()) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
+        else if (size > hr.heap_before) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
         regs[0] = 0; regs[1] = (uint64_t)g_heap; return 0;
     }
     case 0x02: regs[0] = 0; return 0;   // SetMemoryPermission

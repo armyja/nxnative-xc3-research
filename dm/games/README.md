@@ -47,7 +47,8 @@ None of them has a default game: without one they stop and list the profiles. To
 Each operation (map, unmap, SetHeapSize) is **one transaction**: the range check, the new-page count, the pool
 comparison, the actual `mprotect` and the commit of the bitmap and counters all run under one lock, so the accounting
 and the real page permissions can never be left disagreeing by two threads, and a failed effect commits nothing.
-The heap effect is told the old size **from that lock** (`dm/host/membudget_vm.c`), not from a caller-visible copy,
+The heap log's "did it grow" test reads the transaction's own `heap_before`/`heap_after` snapshot, not the total
+used memory. The heap effect is told the old size **from that lock** (`dm/host/membudget_vm.c`), not from a caller-visible copy,
 so a grow that a shrink follows cannot leave the released tail pages writable. There is no separate heap-size
 shadow: the transaction is the only authority, and `dm_guest_heap_readable`, `QueryMemory` and the heap log all read
 the same snapshot.

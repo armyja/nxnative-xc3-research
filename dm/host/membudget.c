@@ -58,7 +58,7 @@ static void set_bits(uint64_t off, uint64_t size, int on) {
     }
 }
 
-static void snap(mb_result *r) {
+static void snap(mb_result *r) {   // callers fill heap_before before the effect
     r->used_after = g_fixed + g_heap + g_alias;
     r->alias_after = g_alias; r->heap_after = g_heap; r->limit = g_budget;
 }
@@ -67,7 +67,7 @@ int mb_map(uint64_t off, uint64_t size, mb_effect fx, void *ctx, mb_result *r) {
     mb_result tmp, *o = r ? r : &tmp;
     memset(o, 0, sizeof *o);
     pthread_mutex_lock(&g_lock);
-    o->used_before = g_fixed + g_heap + g_alias;
+    o->used_before = g_fixed + g_heap + g_alias; o->heap_before = g_heap;
     if (!range_ok(off, size)) { o->rc = MB_E_RANGE; snap(o); goto out; }
     uint64_t pages = count_bits(off, size, 0), need = pages * PAGE;   // pages <= cap/PAGE, no overflow
     o->new_bytes = need;
@@ -87,7 +87,7 @@ int mb_unmap(uint64_t off, uint64_t size, mb_effect fx, void *ctx, mb_result *r)
     mb_result tmp, *o = r ? r : &tmp;
     memset(o, 0, sizeof *o);
     pthread_mutex_lock(&g_lock);
-    o->used_before = g_fixed + g_heap + g_alias;
+    o->used_before = g_fixed + g_heap + g_alias; o->heap_before = g_heap;
     if (!range_ok(off, size)) { o->rc = MB_E_RANGE; snap(o); goto out; }
     uint64_t pages = count_bits(off, size, 1), freed = pages * PAGE;
     o->new_bytes = freed;
@@ -104,7 +104,7 @@ int mb_set_heap(uint64_t size, mb_effect fx, void *ctx, mb_result *r) {
     mb_result tmp, *o = r ? r : &tmp;
     memset(o, 0, sizeof *o);
     pthread_mutex_lock(&g_lock);
-    o->used_before = g_fixed + g_heap + g_alias;
+    o->used_before = g_fixed + g_heap + g_alias; o->heap_before = g_heap;
     if (size > g_heap_cap) { o->rc = MB_E_CAP; snap(o); goto out; }
     uint64_t used = g_fixed + g_alias;                  // the heap part is replaced, not added
     if (used > g_budget || size > g_budget - used) { o->rc = MB_E_BUDGET; snap(o); goto out; }

@@ -29,7 +29,7 @@ typedef struct {
     int rc;
     uint64_t new_bytes;     // pages this operation would add (map) or did release (unmap)
     uint64_t used_before, used_after, limit;
-    uint64_t alias_after, heap_after;
+    uint64_t alias_after, heap_before, heap_after;   // heap_before: the committed heap inside this transaction
 } mb_result;
 
 void mb_init(uint64_t alias_cap, uint64_t budget, uint64_t fixed_bytes);
