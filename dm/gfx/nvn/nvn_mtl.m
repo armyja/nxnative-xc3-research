@@ -3806,9 +3806,21 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             int tid = reg < 32 ? (int)(S.img[nvn_stage][reg] & 0xfffff) : 0;
             void *tv = NULL; uint64_t trid = tid ? tex_fast_rid(tid, &tv) : 0; __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
             if (passdump()) PD("W %llu st%d reg%d tid=%d %s ser=%llu", g_stat_pass, nvn_stage, reg, tid, t ? "real" : "dummy", t && tid < g_ntreg ? g_treg[tid].t.serial : 0ull);
-            if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "texture bound to an image slot lacks the shader-write usage (texture ID %d)", tid); t = nil; }
+            int idg_resolved = t != nil, idg_blocked = 0;   // diagnostic only: what the pre-fallback PD above cannot tell
+            if (t && !(t.usage & MTLTextureUsageShaderWrite)) { RED_ONCE(32, "texture bound to an image slot lacks the shader-write usage (texture ID %d)", tid); t = nil; idg_blocked = 1; }
             if (!t) { t = dummy_img(b->dtt, b->dpf); trid = g_dummy_img_rid[b->dtt & 7][b->dpf & 3]; }   // Unbound: D3D semantics discard the write - write into a dedicated dummy texture so the set that reads 0 is not polluted
             slots[aid] = trid;
+            // DM_NVN_KEYDUMP only: the resource this binding finally ships, recorded after the usage check, the dummy
+            // fallback and the slot write. The "W ..." line above is pre-fallback: it says "real" as soon as a texture
+            // resolved, before the shader-write usage check may clear it. This line is encoding-time state only - it says
+            // nothing about GPU execution or about what the shader actually reads at run time.
+            if (g_kd_force)
+                MLOG("[img-final] F%llu p%llu st%d key=%s reg%d aid%d tid%d ser=%llu actual=%s usage_blocked=%d rid=%#llx fmt=%lu %lux%lux%lu type=%lu usage=%#lx",
+                     (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass, nvn_stage, sh->key, reg, aid, tid,
+                     (unsigned long long)(tid > 0 && tid < g_ntreg ? g_treg[tid].t.serial : 0),
+                     (t && idg_resolved && !idg_blocked) ? "real" : "dummy", idg_blocked, (unsigned long long)trid,
+                     (unsigned long)t.pixelFormat, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)t.depth,
+                     (unsigned long)t.textureType, (unsigned long)t.usage);
             USE(t, MTLResourceUsageRead | MTLResourceUsageWrite);
         } else if (b->kind == NVN_RB_TBUF) {   // Typed buffer: the buffer texture (target BUFFER) in texture slot r
             int tid = reg < 128 ? (int)(S.tex[nvn_stage][reg] & 0xfffff) : 0;
