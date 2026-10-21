@@ -8,7 +8,13 @@ library through the normal entry point.
 
 Usage:
   dmsh_refill.py --dumps RUN/shdump --containers SAMPLE_DIR [SAMPLE_DIR ...] \
-                 --profile PROFILE_DIR --pkg PKG_DIR --out OUT_DIR [--dry-run] [--j 1]
+                 --profile PROFILE_DIR --pkg PKG_DIR --out OUT_DIR [--dry-run] [--j 1] \
+                 [--allow-dump-only]
+
+With --allow-dump-only, a dumped key that no container holds is packaged from the dump itself and labelled
+runtime_dump#<n>: the dump is the shader the game actually handed the driver, so it is a real source, just without a
+container/program label. The stage then comes from the control section: offset 0x714 is 0 for vertex and 1 for pixel,
+which held for all 132 container-labelled dumps and the six added later (138 checked, no exception).
 
 Container samples are the *.wishp (SPCH) files a previous extraction produced: a dumped key is only buildable when the
 same bytes exist in one of them, because the dump itself carries no program/entry context. Keys without a container
@@ -87,6 +93,7 @@ def main():
     ap.add_argument('--profile', required=True); ap.add_argument('--pkg', required=True)
     ap.add_argument('--out', required=True); ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--j', default='1')
+    ap.add_argument('--allow-dump-only', action='store_true')
     a = ap.parse_args()
 
     dumps, bad = read_dumps(a.dumps)
@@ -105,7 +112,14 @@ def main():
     for k, (ctl, code) in dumps.items():
         if k in have: continue
         hit = idx.get(k)
-        if not hit: no_source[k] = 'not in any container sample'; continue
+        if not hit:
+            if a.allow_dump_only:
+                stage = 'ps' if ctl[0x714] == 1 else 'vs' if ctl[0x714] == 0 else None
+                if stage is None: no_source[k] = f'no container and control 0x714 = {ctl[0x714]}'; continue
+                new[k] = dict(container=None, si=None, pi=None, ei=None, stage=stage,
+                              ctl=ctl, code=code, chain=None)
+                continue
+            no_source[k] = 'not in any container sample'; continue
         if hit['stage'] == 'gs': refused[k] = f"geometry stage ({hit['container']} slct{hit['si']} program{hit['pi']})"; continue
         if hit['stage'] not in ('vs', 'ps', 'cs'): refused[k] = f"unsupported stage {hit['stage']}"; continue
         new[k] = hit
@@ -119,10 +133,12 @@ def main():
         for k, h in sorted(new.items()):
             head = bytearray(0x38); head[0:8] = b'BTCDBTCD'
             struct.pack_into('<2I', head, 0x28, len(h['ctl']), len(h['code']))
-            fn = f"{h['stage']}_{os.path.splitext(h['container'])[0]}_s{h['si']}p{h['pi']}.bin"
+            base = os.path.splitext(h['container'])[0] + f"_s{h['si']}p{h['pi']}" if h['container'] else 'runtime_dump'
+            fn = f"{h['stage']}_{base}.bin"
             open(os.path.join(a.pkg, fn), 'wb').write(bytes(head) + h['code'] + h['ctl'])
-            rows.append(f"{fn}\t0\t{'vertex' if h['stage'] == 'vs' else 'pixel' if h['stage'] == 'ps' else 'compute'}\t{k}\t"
-                        f"{os.path.splitext(h['container'])[0]}#{h['si']}:{h['pi']}:{h['ei']}:{h['stage']}")
+            src = (f"{os.path.splitext(h['container'])[0]}#{h['si']}:{h['pi']}:{h['ei']}:{h['stage']}"
+                   if h['container'] else f"runtime_dump#{k}:{h['stage']}")
+            rows.append(f"{fn}\t0\t{'vertex' if h['stage'] == 'vs' else 'pixel' if h['stage'] == 'ps' else 'compute'}\t{k}\t{src}")
         with open(map_path, 'a') as f: f.write('\n'.join(rows) + '\n')
         pr = collections.defaultdict(dict)
         for k, h in new.items(): pr[(h['container'], h['si'], h['pi'])][h['stage']] = k
