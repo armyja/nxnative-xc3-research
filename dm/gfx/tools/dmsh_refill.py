@@ -114,8 +114,15 @@ def main():
         hit = idx.get(k)
         if not hit:
             if a.allow_dump_only:
-                stage = 'ps' if ctl[0x714] == 1 else 'vs' if ctl[0x714] == 0 else None
-                if stage is None: no_source[k] = f'no container and control 0x714 = {ctl[0x714]}'; continue
+                # 0x714 is an empirical rule, not a format guarantee: 0 = vertex, 1 = pixel across every labelled dump
+                # seen so far. Anything else (a geometry or compute control, a different title, a changed layout) must
+                # be reported rather than folded into one of the two, or a wrong stage would be compiled silently.
+                v = ctl[0x714]
+                if v not in (0, 1):
+                    no_source[k] = f'no container and control 0x714 = {v} (not 0/1): stage unknown, not guessed'
+                    print(f"  [WARN] {k}: control 0x714 = {v}, expected 0 (vs) or 1 (ps); left out instead of guessing")
+                    continue
+                stage = 'ps' if v == 1 else 'vs'
                 new[k] = dict(container=None, si=None, pi=None, ei=None, stage=stage,
                               ctl=ctl, code=code, chain=None)
                 continue
