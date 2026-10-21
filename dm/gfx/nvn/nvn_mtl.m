@@ -18,6 +18,7 @@
 #include "nvn_obj.h"
 #include "nvn_imgdiag.h"
 #include "../tex/nvn_fmt_mtl.h"
+#include "nvn_ssboobs.h"
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
 #include "nvn_builtin.h"
@@ -7331,8 +7332,87 @@ static void clear_ds_tri(const p_clear_ds *c) {
        (unsigned long)sc.x, (unsigned long)sc.y, (unsigned long)sc.width, (unsigned long)sc.height);
 }
 
+
+// ---- DM_NVN_SSBO_OBS: read-only provenance of one vertex program's storage-buffer slots (diagnostic only) ----
+// Real prog_t capacity is sd[6] (nvn_obj.h); ProgramSetShaders rejects n > 6. Identity uses prog_key_cached only, which
+// never creates and never hashes; a program whose stage failed to load keeps a nil sh[] entry but its cached key may
+// still exist, so the key lookup is independent of the load result. Nothing here reads control/data, allocates, or
+// touches the GPU.
+static ssbo_obs_state g_so;
+static void ssbo_obs_arm(void) {
+    if (g_so.mode) return;                                    // parsed once; absent stays closed
+    g_so.mode = 2;
+    const char *e = getenv("DM_NVN_SSBO_OBS");
+    if (!e || !*e) return;
+    if (!ssbo_obs_parse(e, g_so.key)) { MLOG("DM_NVN_SSBO_OBS: expected 16 lowercase hex digits of a vertex key: disabled"); return; }
+    g_so.mode = 1;
+    MLOG("DM_NVN_SSBO_OBS=%s: read-only vertex storage-buffer provenance armed (one snapshot at the first real draw of that vertex program)", e);
+}
+static void ssbo_obs_bind(const void *a) {                    // real replay only (not the lookahead scans)
+    if (g_so.mode != 1) return;
+    const p_bind_buf *b = a;
+    ssbo_obs_note_bind(&g_so, b->stage, b->index, (uint64_t)atomic_load(&g_cur_frame), ++g_so.bind_seq);
+}
+static void ssbo_obs_draw(void) {                             // real replay draw only, before draw()
+    if (g_so.mode != 1) return;
+    const prog_t *p = S.bst[0];
+    if (!p) return;                                           // no vertex binding: nothing unreadable, silent
+    unsigned cap = (unsigned)(sizeof p->sd / sizeof p->sd[0]);
+    unsigned n = p->nstage;
+    g_so.obs_seq++;
+    if (n == 0 || n > cap) {
+        if (++g_so.invalid == 1) MLOG("[ssbo-obs] invalid nstage=%u (real capacity %u): identity-unavailable, no truncation", n, cap);
+        return;
+    }
+    uint8_t known[SSBO_OBS_MAXKEYS], keys[SSBO_OBS_MAXKEYS][8]; unsigned nk = 0; int hit = -1;
+    for (unsigned i = 0; i < n && i < SSBO_OBS_MAXKEYS; i++) {
+        known[i] = (uint8_t)prog_key_cached(p, i, keys[i]);
+        if (known[i]) { nk++; if (hit < 0 && !memcmp(keys[i], g_so.key, 8)) hit = (int)i; }
+    }
+    if (n > SSBO_OBS_MAXKEYS) {                               // beyond the record bound: fail closed, never truncate
+        if (++g_so.invalid == 1) MLOG("[ssbo-obs] nstage=%u exceeds the record bound %d: identity-unavailable", n, SSBO_OBS_MAXKEYS);
+        return;
+    }
+    int v = ssbo_obs_verdict(n, cap, nk, hit);
+    if (v == SSBO_OBS_UNKNOWN) {
+        if (++g_so.unknown == 1)
+            MLOG("[ssbo-obs] identity-unavailable: %u of %u shader-data keys of the bound vertex program were readable; this draw's identity is unknown, not evidence that the target is absent", nk, n);
+        return;
+    }
+    if (v != SSBO_OBS_HIT) return;                            // all cached and no match: no target this draw, silent
+    uint64_t addr[SSBO_OBS_SLOTS], size[SSBO_OBS_SLOTS];
+    for (int i = 0; i < SSBO_OBS_SLOTS; i++) { addr[i] = S.ssbo[0][i].addr; size[i] = S.ssbo[0][i].size; }
+    int cand = ssbo_obs_candidates(addr), amb = cand > 1;
+    char kb[SSBO_OBS_MAXKEYS * 24]; size_t ko = 0; kb[0] = 0;
+    for (unsigned i = 0; i < n; i++) {
+        char one[24];
+        if (known[i]) snprintf(one, sizeof one, "%02x%02x%02x%02x%02x%02x%02x%02x", keys[i][0], keys[i][1], keys[i][2], keys[i][3], keys[i][4], keys[i][5], keys[i][6], keys[i][7]);
+        else snprintf(one, sizeof one, "unknown");
+        int w = snprintf(kb + ko, sizeof kb - ko, "%s%d=%s", i ? "," : "", (int)i, one);
+        if (w < 0 || (size_t)w >= sizeof kb - ko) { ko = 0; break; }
+        ko += (size_t)w;
+    }
+    char b[512];
+    int r = snprintf(b, sizeof b, "[ssbo-obs] target key=%02x%02x%02x%02x%02x%02x%02x%02x frame=%llu obs_seq=%llu pass_counter=%llu (unassociated-final-pass) nstage=%u cached=%u/%u hit=%d candidates=%d ambiguous=%d keys=%s",
+                     g_so.key[0], g_so.key[1], g_so.key[2], g_so.key[3], g_so.key[4], g_so.key[5], g_so.key[6], g_so.key[7],
+                     (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_so.obs_seq, (unsigned long long)g_stat_pass,
+                     n, nk, n, hit, cand, amb, kb);
+    if (r < 0 || (size_t)r >= sizeof b) { if (++g_so.invalid == 1) MLOG("[ssbo-obs] record header does not fit its bound: diagnostic closed"); g_so.mode = 2; return; }
+    MLOG("%s", b);
+    for (int i = 0; i < SSBO_OBS_SLOTS; i++) {
+        if (ssbo_obs_fmt_slot(b, sizeof b, i, addr[i], size[i], &g_so.lb[i]) < 0) {
+            if (++g_so.invalid == 1) MLOG("[ssbo-obs] slot %d record does not fit its bound: diagnostic closed with an incomplete record", i);
+            g_so.mode = 2; return;
+        }
+        MLOG("%s", b);
+    }
+    MLOG("[ssbo-obs] done key=%02x%02x%02x%02x%02x%02x%02x%02x slots=16 candidates=%d ambiguous=%d", g_so.key[0], g_so.key[1], g_so.key[2], g_so.key[3], g_so.key[4], g_so.key[5], g_so.key[6], g_so.key[7], cand, amb);
+    g_so.done = 1; g_so.mode = 2;
+}
+
 void mtl_exec(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; state_reset(); }
+    ssbo_obs_arm();
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
     int trace = dump_all && passdump();   // Normal mode does not check the frame range per operation; the full command position is only used for the designated diagnostic frames
     for (;;) {
@@ -7439,14 +7519,15 @@ void mtl_exec(const uint8_t *p) {
                 PD("c %llu depth-stencil clear recorded ser=%llu depth=%g depth_mask=%d stencil=%d stencil_mask=%#x", g_stat_pass, R.rt.depth ? (unsigned long long)R.rt.depth->serial : 0ull, c->depth, c->depth_mask, c->stencil, c->stencil_mask);
                 break;
             }
-            case OP_DRAW: if (g_rc_skip) { imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); draw(a, NULL); g_exec_next = NULL; break;   // Lookahead start point
-            case OP_DRAW_IDX: if (g_rc_skip) { imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); draw(NULL, a); g_exec_next = NULL; break;
+            case OP_DRAW: if (g_rc_skip) { g_so.skips++; imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); ssbo_obs_draw(); draw(a, NULL); g_exec_next = NULL; break;   // Lookahead start point
+            case OP_DRAW_IDX: if (g_rc_skip) { g_so.skips++; imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); ssbo_obs_draw(); draw(NULL, a); g_exec_next = NULL; break;
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             // One case of its own, NOT inside the label chain below: a label chain shares one body, so inserting a case in
             // the middle makes every earlier label fall into it and run that body with the wrong opcode.
             case OP_BIND_IMG: imgdiag_bind(a); state_op(h.op, a); break;
+            case OP_BIND_SSBO: state_op(h.op, a); ssbo_obs_bind(a); break;   // own label: the grouped chain below must not fall through into this body
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
-            case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_STENCIL:
+            case OP_BIND_UBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_STENCIL:
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_BLEND_COLOR: case OP_COPY_STRIDE:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
