@@ -106,6 +106,7 @@ def scan_containers(paths):
     """Every stage entry of every container, in file order. Duplicates are kept so they can be reported."""
     entries, skipped = [], []
     for p in paths:
+        if not os.path.isfile(p): continue          # a directory or a glob that matched nothing is not a container
         try:
             shaders = spch.shaders(open(p, 'rb').read(), os.path.basename(p)[:-6])
         except Exception as e:
@@ -390,13 +391,24 @@ def selftest():
         r = subprocess.run(cmd, env=env, capture_output=True, text=True)
         want(r.returncode == 2, 'a same-named package with different bytes must be refused')
         open(victim, 'wb').write(keep)
-        # the publish path: an injected failure between the two renames must leave the profile as it was
+        # the publish path: an injected failure between the two renames must leave the profile as it was, and must not
+        # delete a package that was already there before the run (the reported P1)
         map_before, pairs_before = open(map_p).read(), open(os.path.join(prof, 'shader_pairs.tsv')).read()
-        put('ps', 31)
+        pre_ctl, pre_code = synth('vs', 40)           # already has its package: this run must reuse it, not own it
+        pre_key, pre_blob = skey(pre_ctl, pre_code), package_bytes(pre_ctl, pre_code)
+        pre_fn = package_name('vs', pre_key, None)
+        open(os.path.join(dumps_dir, pre_key + '.ctl'), 'wb').write(pre_ctl)
+        open(os.path.join(dumps_dir, pre_key + '.code'), 'wb').write(pre_code)
+        open(os.path.join(root, 'pkg', pre_fn), 'wb').write(pre_blob)
+        new_key = put('ps', 41)                      # genuinely new: this run creates it and must remove it on rollback
         r = subprocess.run(cmd, env=dict(env, DM_REFILL_TEST_FAIL='pairs'), capture_output=True, text=True)
         want(r.returncode == 3, f'injected publish failure should report rc 3, got {r.returncode}')
         want(open(map_p).read() == map_before, 'the map must be recovered after a failed publish')
         want(open(os.path.join(prof, 'shader_pairs.tsv')).read() == pairs_before, 'pairs must be untouched after a failed publish')
+        want(os.path.exists(os.path.join(root, 'pkg', pre_fn)), 'a package that existed before the run must survive a rollback')
+        want(open(os.path.join(root, 'pkg', pre_fn), 'rb').read() == pre_blob, 'that package must keep its exact bytes')
+        want(not os.path.exists(os.path.join(root, 'pkg', package_name('ps', new_key, None))),
+             'the package this run created must be removed by the rollback')
         # a --profile the build does not read is refused before writing
         other = os.path.join(root, 'other'); os.makedirs(other)
         open(os.path.join(other, 'shader_map.tsv'), 'w').write('# untouched\n')
@@ -535,18 +547,35 @@ def main():
                 if vs not in (have | set(new)) or ps not in (have | set(new)):
                     raise Refuse(f'pair {vs} {ps} would reference a key missing from the map')
                 new_pairs.append((vs, ps))
-        # pre-check every target before touching the profile: a package may not be replaced by different bytes
+        # Pre-check every target before touching the profile. A package that is already there with the same bytes is
+        # left completely alone: it is not replaced (its inode and timestamps stay), and it is never added to `created`,
+        # because a rollback must only remove files this run actually made. The earlier version replaced it and
+        # recorded it, so a failed publish deleted a package that had existed before the run.
         os.makedirs(a.pkg, exist_ok=True)
+        reuse = set()
         for fn, blob in placed.items():
             dst = os.path.join(a.pkg, fn)
-            if os.path.exists(dst) and open(dst, 'rb').read() != blob:
+            if not os.path.exists(dst): continue
+            if open(dst, 'rb').read() != blob:
                 raise Refuse(f'{dst} already exists with different bytes')
-        # publish: packages first (unique names, so a failure can be undone by removing what we created), then the two
-        # tables through a temporary file each, with the previous contents kept in memory so a failed rename can put
-        # them back. This is a recoverable sequence, not a cross-file filesystem transaction.
+            reuse.add(fn)
+        # publish: only the genuinely new packages, each through its own temporary file, then the two tables. The
+        # previous table contents are kept in memory so a failed rename can put them back. Recoverable sequence, not a
+        # cross-file filesystem transaction.
+        strays = []
         for fn in placed:
+            if fn in reuse: continue
             dst = os.path.join(a.pkg, fn); tmp_dst = dst + f'.tmp{os.getpid()}'
-            shutil.copyfile(os.path.join(tmp, fn), tmp_dst); os.replace(tmp_dst, dst); created.append(dst)
+            try:
+                shutil.copyfile(os.path.join(tmp, fn), tmp_dst); os.replace(tmp_dst, dst); created.append(dst)
+            except OSError:
+                strays.append(tmp_dst); raise
+            finally:
+                for s_ in strays:
+                    try: os.unlink(s_)
+                    except OSError: pass
+                strays = []
+        if reuse: print(f'reused {len(reuse)} package(s) that were already present with identical bytes')
         map_old = open(map_path).read() if os.path.exists(map_path) else ''
         pairs_old = open(pairs_path).read() if os.path.exists(pairs_path) else ''
         map_add = ''.join(f"{fn}\t0\t{STAGE_COL[st]}\t{k}\t{src}\n" for fn, k, st, src in rows)
@@ -569,16 +598,22 @@ def main():
             except OSError: pass
         print(f'refused: {e} (profile left as it was)'); return 2
     except OSError as e:
+        removed = 0
         for f_ in created:
-            try: os.unlink(f_)
+            try: os.unlink(f_); removed += 1
             except OSError: pass
+        restored = True
         if map_old is not None:
             try: open(map_path, 'w').write(map_old)
-            except OSError: print(f'  [RED] could not restore {map_path}; it may hold the new rows')
+            except OSError: restored = False; print(f'  [RED] could not restore {map_path}; it may hold the new rows')
         if pairs_old is not None:
             try: open(pairs_path, 'w').write(pairs_old)
-            except OSError: print(f'  [RED] could not restore {pairs_path}')
-        print(f'publish failed: {e}; put the previous map and pairs back, removed the packages this run added')
+            except OSError: restored = False; print(f'  [RED] could not restore {pairs_path}')
+        if restored:
+            print(f'publish failed: {e}; previous map and pairs restored, {removed} package(s) this run added removed, '
+                  f'{len(placed) - removed} unchanged')
+        else:
+            print(f'publish failed: {e}; RECOVERY INCOMPLETE (see the [RED] lines above) - inspect the profile')
         return 3
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
