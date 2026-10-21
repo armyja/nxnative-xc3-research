@@ -2345,12 +2345,78 @@ static void attach(MTLRenderPassAttachmentDescriptor *a, const tex_t *t, const v
 // mode 1 (clear_only): a pass opened only to land pending clears, attaching only the attachments that have clears; mode 2: the lookahead proves this pass does not use depth-stencil, so depth is not attached.
 // clear_only: a pass opened only to land pending clears, attaching only the attachments that have clears - the other attachments are not touched by this pass, and attaching them costs a pointless load and store on TBDR
 // (Mac character select screen: the color-clear pass drags along a 400x225 depth load and store)
+
+// ---------------- DM_NVN_PSOFAIL_RT: read-only pass-attachment provenance (diagnostic only) ----------------
+// A failing pipeline is expensive to explain: the attachment formats that reach Metal are derived from the views that were
+// actually attached, and the Metal error names no colour index. This switch copies, at the moment a pass is really built,
+// the scalars of that pass (the pd attachments and the NVN objects they came from), and prints them once when the named
+// fragment pipeline fails in pso_get_. It creates no GPU objects, rebuilds no view, changes no format / usage / blend /
+// encoding behaviour, and when it is off it does no work at all. It never re-attaches or re-derives anything at failure
+// time, and it never reads R.rt at failure time: a pass continuation may have replaced those objects since.
+typedef struct {
+    uint8_t nvn, attached, has_cview, cset_format, cset_levels, cset_layers;
+    uint64_t serial;
+    uint32_t nvn_format, nvn_target, nvn_flags, nvn_w, nvn_h, nvn_depth, nvn_samples;
+    uint16_t cview_format, cview_min_layer;
+    uint8_t cview_base_level;
+    uint32_t mtl_fmt, mtl_w, mtl_h, mtl_depth, mtl_type;
+    uint32_t pd_level, pd_slice, pd_depth_plane;
+} psort_slot;
+static struct {
+    int mode;                 // 0 off, 1 armed, 2 done or unusable
+    char key[24];
+    uint8_t valid;
+    uint64_t frame, gpass, serial;
+    uint32_t cfmt[8], dfmt, sfmt;
+    psort_slot s[8];
+} g_psort;
+
+static void psort_arm(void) {
+    if (g_psort.mode) return;                            // parsed once
+    g_psort.mode = 2;
+    const char *e = getenv("DM_NVN_PSOFAIL_RT");
+    if (!e || !*e) { g_psort.mode = 0; return; }
+    size_t n = strlen(e);
+    if (n != 16) { MLOG("DM_NVN_PSOFAIL_RT: expected a complete 16-hex fragment key, got %zu characters: disabled", n); return; }
+    for (size_t i = 0; i < n; i++)
+        if (!((e[i] >= '0' && e[i] <= '9') || (e[i] >= 'a' && e[i] <= 'f'))) {
+            MLOG("DM_NVN_PSOFAIL_RT: character %zu is not lowercase hex: disabled", i); return; }
+    memcpy(g_psort.key, e, n); g_psort.key[n] = 0; g_psort.mode = 1;
+    MLOG("DM_NVN_PSOFAIL_RT=%s: read-only pass-attachment provenance armed (one record on that fragment pipeline's failure)", g_psort.key);
+}
+static int psort_match(const char *k) {
+    size_t n = strlen(g_psort.key);
+    return k && !strncmp(k, g_psort.key, n) && (k[n] == 0 || !strcmp(k + n, "_b"));
+}
+static void psort_capture(MTL4RenderPassDescriptor *pd) {     // the real pd and g_pass.serial are fixed here
+    if (g_psort.mode != 1) return;                            // off, or already reported: no copy, no work
+    g_psort.valid = 1; g_psort.frame = (uint64_t)atomic_load(&g_cur_frame); g_psort.gpass = g_stat_pass; g_psort.serial = g_pass.serial;
+    memcpy(g_psort.cfmt, g_pass.cfmt, sizeof g_psort.cfmt); g_psort.dfmt = g_pass.dfmt; g_psort.sfmt = g_pass.sfmt;
+    for (int i = 0; i < 8; i++) {
+        psort_slot *o = &g_psort.s[i]; memset(o, 0, sizeof *o);
+        const tex_t *tx = i < R.rt.n ? R.rt.color[i] : NULL;   // only the first n slots are live; a later one may hold a stale pointer
+        o->nvn = tx != NULL;
+        if (tx) { o->serial = tx->serial; o->nvn_format = (uint32_t)tx->d.format; o->nvn_target = (uint32_t)tx->d.target;
+                  o->nvn_flags = (uint32_t)tx->d.flags; o->nvn_w = tx->d.width; o->nvn_h = tx->d.height;
+                  o->nvn_depth = tx->d.depth; o->nvn_samples = (uint32_t)tx->d.samples; }
+        if (i < R.rt.n) { o->has_cview = R.rt.has_cview[i]; o->cset_format = R.rt.cview[i].set_format;
+            o->cset_levels = R.rt.cview[i].set_levels; o->cset_layers = R.rt.cview[i].set_layers;
+            o->cview_format = R.rt.cview[i].format; o->cview_base_level = R.rt.cview[i].base_level; o->cview_min_layer = R.rt.cview[i].min_layer; }
+        o->attached = pd.colorAttachments[i].texture != nil;
+        if (o->attached) { id<MTLTexture> t = pd.colorAttachments[i].texture;
+            o->mtl_fmt = (uint32_t)t.pixelFormat; o->mtl_w = (uint32_t)t.width; o->mtl_h = (uint32_t)t.height;
+            o->mtl_depth = (uint32_t)t.depth; o->mtl_type = (uint32_t)t.textureType;
+            o->pd_level = (uint32_t)pd.colorAttachments[i].level; o->pd_slice = (uint32_t)pd.colorAttachments[i].slice;
+            o->pd_depth_plane = (uint32_t)pd.colorAttachments[i].depthPlane; }
+    }
+}
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only);
 static id<MTL4RenderCommandEncoder> rp_begin(void) { return rp_begin_ex(0); }
 static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only);
 static id<MTL4RenderCommandEncoder> rp_begin_ex(int clear_only) { AP_B; id<MTL4RenderCommandEncoder> e = rp_begin_ex_(clear_only); AP_E(1); return e; }
 static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     if (g_enc) return g_enc;
+    psort_arm();
     memset(g_zskip_cand_ok, 0, sizeof g_zskip_cand_ok);
     g_enc_mode = clear_only;
     if (!R.has_rt) { RED_ONCE(3, "no render target set before the draw"); return nil; }
@@ -2465,6 +2531,7 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
         uint64_t ser = g_pass.serial + 1; memset(&g_pass, 0, sizeof g_pass); g_pass.serial = ser;
         for (int i = 0; i < R.rt.n && i < 8; i++) { id<MTLTexture> t = R.rt.color[i] ? pd.colorAttachments[i].texture : nil;
             if (t) { g_pass.cfmt[i] = (uint32_t)t.pixelFormat; g_pass.samples = (uint32_t)t.sampleCount; } }
+        psort_capture(pd);
         id<MTLTexture> dt = R.rt.depth ? pd.depthAttachment.texture : nil, stt = R.rt.depth ? pd.stencilAttachment.texture : nil;   // Depth / stencil attachments are fetched separately (possibly only one of them is attached)
         g_pass.hd = dt && dt.pixelFormat != MTLPixelFormatStencil8; g_pass.hs = stt != nil;
         g_pass.dfmt = g_pass.hd ? (uint32_t)dt.pixelFormat : 0; g_pass.sfmt = stt ? (uint32_t)stt.pixelFormat : 0;
@@ -3437,6 +3504,8 @@ static id<MTLRenderPipelineState> pso_pend_take(const pso_key *k) {   // Called 
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused);
 static id<MTLFunction> ms_fs_override(NvShader *fs);   // DM_NVN_MAGSCAN (defined before draw)
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get(NvProg *pr, MTLRenderPassDescriptor *unused) { AP_B; __unsafe_unretained id<MTLRenderPipelineState> r = pso_get_(pr, unused); AP_E(2); return r; }
+static void psort_report(const pso_key *k, const NvShader *vs, const NvShader *fs, id<MTLFunction> ms_fn);
+static void psort_cached(const NvShader *vs, const NvShader *fs);
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused) {
     (void)unused;
     __unsafe_unretained NvShader *vs = pr->sh[0], *fs = pr->sh[1];
@@ -3446,7 +3515,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     id<MTLFunction> ms_fn = ms_fs_override(fs); if (ms_fn) k.fsfn = (__bridge void *)ms_fn;   // DM_NVN_MAGSCAN phases 2 / 3
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
     if (cached) return cached;
-    if (hm_get_id(&g_pso_fail, &k)) return nil;
+    if (hm_get_id(&g_pso_fail, &k)) { psort_cached(vs, fs); return nil; }
     id<MTLRenderPipelineState> ps;
     NSError *e = nil; uint64_t bt = bp_now();
     ps = g_pso_lmap || ms_fn ? nil : pso_pend_take(&k);
@@ -3457,7 +3526,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
         ps = [g_dev newRenderPipelineStateWithDescriptor:d error:&e];
     }
     g_bp_pso_n++; g_bp_pso_ns += bp_now() - bt;
-    if (!ps) { MLOG("[RED] failed to create render pipeline (vertex %s fragment %s): %s", vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String); hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
+    if (!ps) { MLOG("[RED] failed to create render pipeline (vertex %s fragment %s): %s", vs->key, fs ? fs->key : "-", e.localizedDescription.UTF8String); psort_report(&k, vs, fs, ms_fn); hm_put_id(&g_pso_fail, &k, NSNull.null); return nil; }
     if (!ms_fn) { pso_skey sk; char shex[sizeof sk * 2 + 1]; pso_skey_from(&k, vs, fs, g_pso_lmap != NULL, g_pso_lmap ? &g_pso_fz : NULL, &sk); pso_skey_hex(&sk, shex);
         pso_record("R\t%s\n", shex);
         pso_user_record("R\t%s\n", shex); }
@@ -4560,6 +4629,37 @@ static int fz_reuse_op(const uint8_t *p) { for (int i = 0; i < g_fz.nreuse; i++)
 static int fz_check_on(void) { static int v = -1; if (v < 0) v = getenv("DM_NVN_FUSE_CHECK") != NULL; return v; }
 typedef struct { int idx; p_draw dw; p_draw_idx di; p_scissor sc; int has_sc; void *S_; } fz_snap;
 static fz_snap g_fzs[8]; static int g_nfzs, g_fzs_bad, g_fz_checking; static uint64_t g_fzc_same, g_fzc_diff;
+
+// psort_report / psort_cached live here because they print the real context (g_fz, g_fz_checking), which is declared below
+// rp_begin_ex_ and pso_get_. They read the pass snapshot taken at rp_begin and the failing key; they never read R.rt.
+static void psort_report(const pso_key *k, const NvShader *vs, const NvShader *fs, id<MTLFunction> ms_fn) {
+    if (g_psort.mode != 1 || !psort_match(fs ? fs->key : NULL)) return;
+    int assoc = g_psort.valid && g_psort.serial == g_pass.serial && !memcmp(k->cfmt, g_psort.cfmt, sizeof g_psort.cfmt);
+    char b[512], cf[64]; size_t o = 0; cf[0] = 0;
+    for (int i = 0; i < 8 && o + 8 < sizeof cf; i++) o += (size_t)snprintf(cf + o, sizeof cf - o, "%s%u", i ? "," : "", k->cfmt[i]);
+    snprintf(b, sizeof b, "[psort] fs=%s vs=%s frame=%llu pass=%llu assoc=%s snap=%s/%llu cfmt=%s dfmt=%u sfmt=%u ctx defer=%d fzchk=%d fz=%d phase=%d lmap=%d fsfn=%d ms=%d fzkind=%d",
+             fs ? fs->key : "-", vs ? vs->key : "-", (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass,
+             assoc ? "same-pass" : "mismatch", g_psort.valid ? "valid" : "missing", (unsigned long long)g_psort.serial,
+             cf, k->dfmt, k->sfmt, g_defer_replaying, g_fz_checking, g_fz.active, g_fz.phase,
+             g_pso_lmap != NULL, k->fsfn != NULL, ms_fn != nil, g_pso_fz.kind);
+    MLOG("%s", b);
+    for (int i = 0; i < 8; i++) { const psort_slot *q = &g_psort.s[i];
+        snprintf(b, sizeof b, "[psort] slot%d nvn=%d ser=%llu fmt=%#x tgt=%d flags=%#x %ux%ux%u x%u | cview=%d setfmt=%d fmt=%#x setlv=%d base=%u setly=%d minly=%u | attached=%d mtl=%u %ux%ux%u type=%u level=%u slice=%u dp=%u",
+                 i, q->nvn, (unsigned long long)q->serial, q->nvn_format, q->nvn_target, q->nvn_flags,
+                 q->nvn_w, q->nvn_h, q->nvn_depth, q->nvn_samples,
+                 q->has_cview, q->cset_format, q->cview_format, q->cset_levels, q->cview_base_level,
+                 q->cset_layers, q->cview_min_layer, q->attached, q->mtl_fmt, q->mtl_w, q->mtl_h, q->mtl_depth,
+                 q->mtl_type, q->pd_level, q->pd_slice, q->pd_depth_plane);
+        MLOG("%s", b); }
+    MLOG("[psort] done key=%s pass=%llu assoc=%s slots=8", g_psort.key, (unsigned long long)g_stat_pass, assoc ? "same-pass" : "mismatch");
+    g_psort.mode = 2;
+}
+static void psort_cached(const NvShader *vs, const NvShader *fs) {
+    if (g_psort.mode != 1 || !psort_match(fs ? fs->key : NULL)) return;
+    MLOG("[psort] fs=%s vs=%s: cached failure, this attempt produced no descriptor record (snapshot %s/%llu, pass %llu); no cache clear, no recompile",
+         fs->key, vs ? vs->key : "-", g_psort.valid ? "valid" : "missing", (unsigned long long)g_psort.serial, (unsigned long long)g_pass.serial);
+    g_psort.mode = 2;
+}
 static void draw(const p_draw *dw, const p_draw_idx *di);
 static void fz_snap_take(const p_draw *dw, const p_draw_idx *di) {
     if (g_nfzs >= 8) { g_fzs_bad = 1; return; }
