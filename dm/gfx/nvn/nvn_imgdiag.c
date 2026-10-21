@@ -6,7 +6,7 @@
 #include <string.h>
 
 static struct {
-    int armed, checked, invalid;
+    int armed, checked, invalid, unknown_taken, skip_taken;
     uint8_t target[8];
     imgdiag_slot src[IMGDIAG_SLOTS];
     uint64_t skipped;
@@ -92,7 +92,7 @@ int imgdiag_arm(void) {
 int imgdiag_armed(void) { return D.armed; }
 void imgdiag_disarm(void) { D.armed = 0; }
 void imgdiag_target(uint8_t out[8]) { memcpy(out, D.target, 8); }
-void imgdiag_reset(void) { D.armed = D.checked = D.invalid = 0; D.skipped = 0; memset(D.src, 0, sizeof D.src); }
+void imgdiag_reset(void) { D.armed = D.checked = D.invalid = 0; D.unknown_taken = D.skip_taken = 0; D.skipped = 0; memset(D.src, 0, sizeof D.src); }
 
 void imgdiag_note_bind(int stage, int first, int count, uint64_t frame, uint64_t cmd) {
     if (!D.armed || stage != 1) return;            // only the fragment stage carries the image table we watch
@@ -104,4 +104,6 @@ void imgdiag_note_bind(int stage, int first, int count, uint64_t frame, uint64_t
 }
 void imgdiag_copy_sources(imgdiag_slot *slots) { memcpy(slots, D.src, sizeof D.src); }
 void imgdiag_note_skipped(void) { D.skipped++; }
+int imgdiag_take_unknown(void) { if (!D.armed || D.unknown_taken) return 0; D.unknown_taken = 1; return 1; }
+int imgdiag_take_skip(void) { if (!D.armed || D.skip_taken) return 0; D.skip_taken = 1; return 1; }
 uint64_t imgdiag_skipped(void) { return D.skipped; }

@@ -5848,13 +5848,23 @@ static int imgdiag_match(uint8_t keys[IMGDIAG_MAXKEYS][8], int *n, int *hit) {
     *n = 0; *hit = -1;
     if (!imgdiag_arm()) return 0;
     const prog_t *fp = S.bst[1];
-    if (!fp) return 0;
-    uint8_t t[8]; imgdiag_target(t);   // armed above, so t holds the target
+    if (!fp) return 0;                       // no fragment program: not a cache problem, say nothing
+    uint8_t t[8]; imgdiag_target(t);         // armed above, so t holds the target
+    int want = (int)fp->nstage; if (want > IMGDIAG_MAXKEYS) want = IMGDIAG_MAXKEYS;
     for (unsigned i = 0; i < fp->nstage && *n < IMGDIAG_MAXKEYS; i++)
         if (prog_key_cached(fp, i, keys[*n])) (*n)++;
-    if (*n == 0) { g_idg_noid++; return 0; }   // the program's key cache is not ready: identity unavailable, not "target absent"
     *hit = imgdiag_find_key((const uint8_t (*)[8])keys, *n, t);
-    return *hit >= 0;
+    if (*hit >= 0) return 1;
+    // Identity unknown for this draw whenever some entry could not be read. An entry we could not read might be the
+    // target, so this must never be reported as "target absent"; one line per run bounds the noise.
+    if (*n < want || *n == 0) {
+        g_idg_noid++;
+        if (imgdiag_take_unknown())
+            MLOG("[imgdiag] identity-unavailable frame %llu pass %llu: %d of %d shader-data keys of the bound fragment "
+                 "program were readable; this draw's identity is unknown (not evidence that the target is absent)",
+                 (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass, *n, want);
+    }
+    return 0;
 }
 static void imgdiag_draw(void) {
     uint8_t keys[IMGDIAG_MAXKEYS][8]; int n = 0, hit = -1;
@@ -5892,7 +5902,12 @@ static void imgdiag_draw(void) {
 }
 static void imgdiag_draw_skipped(void) {   // the command was skipped by conditional rendering before reaching draw()
     uint8_t keys[IMGDIAG_MAXKEYS][8]; int n = 0, hit = -1;
-    if (imgdiag_match(keys, &n, &hit)) imgdiag_note_skipped();
+    if (!imgdiag_match(keys, &n, &hit)) return;
+    imgdiag_note_skipped();
+    if (imgdiag_take_skip())              // stays armed: a later real draw of the target may still produce the record
+        MLOG("[imgdiag] target-conditionally-skipped frame %llu pass %llu: the target key is bound but this draw was "
+             "skipped before reaching draw(); still armed for a later real draw",
+             (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_stat_pass);
 }
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     gpu_capture_draw(atomic_load(&g_cur_frame));

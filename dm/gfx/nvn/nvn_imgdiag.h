@@ -52,3 +52,8 @@ void imgdiag_note_bind(int stage, int first, int count, uint64_t frame, uint64_t
 void imgdiag_copy_sources(imgdiag_slot *slots);
 void imgdiag_note_skipped(void);
 uint64_t imgdiag_skipped(void);
+// One-shot reports while armed. Each returns 1 exactly once per arming, 0 afterwards, so a run that never matches
+// still says why: a draw whose key cache was incomplete (identity unknown for that draw, NOT "target absent"), and a
+// draw that matched the target but was skipped by conditional rendering (armed on, a later real draw may still match).
+int imgdiag_take_unknown(void);
+int imgdiag_take_skip(void);

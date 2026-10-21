@@ -100,6 +100,23 @@ int main(void) {
     imgdiag_disarm();
     CHECK(!imgdiag_armed(), "disarmed after one record");
 
+    // 10. one-shot run-state reports, armed only, and only once each
+    imgdiag_reset(); unsetenv("DM_NVN_IMGBIND");
+    CHECK(!imgdiag_take_unknown() && !imgdiag_take_skip(), "off: no run-state records");
+    setenv("DM_NVN_IMGBIND", "4bae5b8abd3bec7f", 1); imgdiag_reset();
+    CHECK(imgdiag_arm(), "armed");
+    CHECK(imgdiag_take_unknown() == 1, "first identity-unavailable reported");
+    CHECK(imgdiag_take_unknown() == 0, "identity-unavailable is one-shot");
+    CHECK(imgdiag_take_skip() == 1, "first target-conditionally-skipped reported");
+    CHECK(imgdiag_take_skip() == 0, "target-conditionally-skipped is one-shot");
+    CHECK(imgdiag_armed(), "a skip report does not disarm: a later real draw may still match");
+    imgdiag_disarm();
+    CHECK(!imgdiag_take_unknown() && !imgdiag_take_skip(), "disarmed: no further run-state records");
+    // invalid key: no run-state records either
+    setenv("DM_NVN_IMGBIND", "zz", 1); imgdiag_reset();
+    CHECK(!imgdiag_arm(), "invalid does not arm");
+    CHECK(!imgdiag_take_unknown() && !imgdiag_take_skip(), "invalid: no run-state records");
+
     printf(fails ? "t_imgdiag: %d failure(s)\n" : "t_imgdiag: ok\n", fails);
     return fails != 0;
 }
