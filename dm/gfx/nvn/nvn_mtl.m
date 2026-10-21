@@ -18,6 +18,7 @@
 #include "nvn_obj.h"
 #include "nvn_imgdiag.h"
 #include "nvn_psort_multi.h"
+#include "nvn_kd_geom.h"
 #include "../tex/nvn_fmt_mtl.h"
 #include "nvn_ssboobs.h"
 #include "../tex/nvn_deswizzle.h"
@@ -5488,6 +5489,23 @@ static void kd_floats(const char *what, int reg, uint64_t addr, uint64_t size, u
         fprintf(stderr, "[kd]     +%#06llx%s\n", (unsigned long long)(i * 4), line);
     }
 }
+static int kdg_cached_probe(const void *p, unsigned index, uint8_t key[8]) {
+    return prog_key_cached((const prog_t *)p, index, key);
+}
+static void kd_geom_line(const p_draw *dw, const p_draw_idx *di) {
+    const prog_t *gs = S.bst[2];
+    kdg_info o;
+    kdg_build(&o, gs, gs ? gs->nstage : 0, gs ? gs->serial : 0, di != NULL,
+              (dw ? dw->ind : di->ind) != 0, dw ? dw->prim : di->prim,
+              dw ? dw->count : di->count, dw ? dw->instances : di->instances,
+              dw ? dw->base_instance : di->base_instance, kdg_cached_probe);
+    char line[1024];
+    if (!kdg_format(line, sizeof line, &o, (uint64_t)atomic_load(&g_cur_frame), (uint64_t)g_stat_pass)) {
+        MLOG("[kd-geom] diagnostic-error (buffer overflow or invalid state); partial line suppressed");
+        return;
+    }
+    MLOG("%s", line);
+}
 static int kd_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     static char key[24]; static int left = -1, every; static uint64_t last = ~0ull;
     if (left < 0) { left = 0; const char *e = getenv("DM_NVN_KEYDUMP");
@@ -5500,6 +5518,7 @@ static int kd_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     int count = dw ? dw->count : di->count, inst = dw ? dw->instances : di->instances, first = dw ? dw->first : 0, binst = dw ? dw->base_instance : di->base_instance;
     fprintf(stderr, "[kd] F%llu pass %llu vs=%s fs=%s prim %d vertices %d instances %d first %d base_vertex %d base_instance %d target %s\n", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass,
             pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1]->key, dw ? dw->prim : di->prim, count, inst, first, di ? di->base_vertex : 0, binst, R.rt.n && R.rt.color[0] ? "yes" : "no");
+    kd_geom_line(dw, di);
     for (int i = 0; i < S.nattr && i < 16; i++) fprintf(stderr, "[kd]   attr %d format %#x offset %u stream %u\n", i, (unsigned)S.attr[i].fmt, (unsigned)S.attr[i].offset, (unsigned)S.attr[i].stream);
     for (int s_ = 0; s_ < S.nstream && s_ < 16; s_++) {
         uint32_t st = S.stream[s_].stride, dv = S.stream[s_].divisor;
