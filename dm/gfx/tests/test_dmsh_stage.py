@@ -63,9 +63,10 @@ class Preflight(unittest.TestCase):
         keys = sorted(loc)
         self.assertEqual([k for k, _, _ in dmsh_stage.unsupported(keys, loc, {})], ['a2'])
 
-    def test_the_guard_never_shells_out(self):
-        # Refusing must not reach the translator or the Metal compiler: this module has no way to.
-        src = open(os.path.join(TOOLS, 'dmsh_stage.py'), encoding='utf-8').read()
+    def test_the_guard_module_has_no_way_to_run_tools(self):
+        # A property of the module only; the behavioural proof that a refusal runs no tool is in
+        # test_dmsh_build_entry.py, which drives the real build with a stand-in translator.
+        with open(os.path.join(TOOLS, 'dmsh_stage.py'), encoding='utf-8') as f: src = f.read()
         for word in ('subprocess', 'os.system', 'xcrun', 'metallib', 'XLATE'):
             self.assertNotIn(word, src)
 
@@ -74,7 +75,7 @@ class Placement(unittest.TestCase):
     """Where the guard sits in dmsh_build.py, read from the script itself."""
 
     def setUp(self):
-        self.lines = open(BUILD, encoding='utf-8').read().split('\n')
+        with open(BUILD, encoding='utf-8') as f: self.lines = f.read().split('\n')
 
     def index_of(self, needle, after=0):
         for i in range(after, len(self.lines)):

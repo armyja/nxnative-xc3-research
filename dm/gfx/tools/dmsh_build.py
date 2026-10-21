@@ -23,7 +23,9 @@ if not os.path.exists(dmsh_facts.TABLE): sys.exit(f'[RED] no answer table {dmsh_
 IOSOUT = os.environ.get('IOSOUT')   # if set, also build the iOS version (iphoneos metallib + reflection) into that directory
 if IOSOUT:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../ios/tools')); import ios_metal
-    IOSOUT = os.path.join(IOSOUT, 'b-' + CHAIN); os.makedirs(IOSOUT, exist_ok=True)
+    # the path is decided here, but the directory is created after the stage preflight below: a refused
+    # selection must leave the file system as it found it
+    IOSOUT = os.path.join(IOSOUT, 'b-' + CHAIN)
 MAIN = os.environ.get('MAIN', f'{DM_ROOT}/data/switch/3.3.94012/Update/ExeFS/main')
 MAP = str(GAME.table('shader_map.tsv'))
 BF_WANT_FILE = str(GAME.table('bf_want.tsv'))
@@ -522,6 +524,7 @@ _bad_stage = dmsh_stage.unsupported(keys, loc, stage_of)
 if _bad_stage:
     for _ln in dmsh_stage.refusal_lines(_bad_stage): print(_ln, flush=True)
     sys.exit(1)
+if IOSOUT: os.makedirs(IOSOUT, exist_ok=True)
 NJ = int(os.environ.get('J', '8'))
 os.makedirs(out, exist_ok=True)
 w = tempfile.mkdtemp(prefix='dmsh_', dir=os.environ.get('WORK'))
