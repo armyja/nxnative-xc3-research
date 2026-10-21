@@ -491,6 +491,13 @@ int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
     memcpy(key, k->key[st], 8);
     return 1;
 }
+int prog_key_cached(const prog_t *p, unsigned i, uint8_t key[8]) {
+    if (!p || i >= p->nstage) return 0;
+    prog_keys_t *k = pk_get(p, 0);            // make = 0: lookup only, never allocates a cache entry
+    if (!k || !(k->ok >> i & 1)) return 0;
+    memcpy(key, k->key[i], 8);
+    return 1;
+}
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
     prog_t *o = (prog_t *)p;
     if (n < 0 || n > 6) { LOG("[RED] ProgramSetShaders stage count %d", n); return 0; }

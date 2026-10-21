@@ -16,6 +16,7 @@
 #endif
 #include "nvn_mtl.h"
 #include "nvn_obj.h"
+#include "nvn_imgdiag.h"
 #include "../tex/nvn_fmt_mtl.h"
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
@@ -5829,6 +5830,62 @@ static void drawcount_check(void) {
     if (f != lf) { if (lf) MLOG("[draws] F%llu draws=%d", (unsigned long long)lf, n); lf = f; n = 0; }
     n++;
 }
+
+// ---- image-binding diagnostic (read-only, off by default) ------------------------------------------------------
+// Chosen and recorded only on the real replay path: OP_DRAW/OP_DRAW_IDX in the replay switch and OP_BIND_IMG split out
+// of the grouped state_op cases. The predictor (pso_predict_rest) and the freeze-check/deferred redraws call state_op
+// or draw() directly and therefore never reach these hooks.
+static uint64_t g_idg_cmd, g_idg_draws;
+static void imgdiag_bind(const void *a) {
+    if (!imgdiag_arm()) return;
+    const p_bind_handles *b = a;
+    imgdiag_note_bind(b->stage, b->first, b->n, atomic_load(&g_cur_frame), ++g_idg_cmd);
+}
+// 1 when the fragment program bound for this draw carries the target key among its shader-data entries. Iterating
+// S.bst[1] is what makes it the fragment source: prog_key's index is the shader-data index, not an NVN stage, and the
+// stage itself is only decided later by the map. Only cached keys are read.
+static int imgdiag_match(uint8_t keys[IMGDIAG_MAXKEYS][8], int *n, int *hit) {
+    *n = 0; *hit = -1;
+    if (!imgdiag_arm()) return 0;
+    const prog_t *fp = S.bst[1];
+    if (!fp) return 0;
+    uint8_t t[8]; imgdiag_target(t);   // armed above, so t holds the target
+    for (unsigned i = 0; i < fp->nstage && *n < IMGDIAG_MAXKEYS; i++)
+        if (prog_key_cached(fp, i, keys[*n])) (*n)++;
+    *hit = imgdiag_find_key((const uint8_t (*)[8])keys, *n, t);
+    return *hit >= 0;
+}
+static void imgdiag_draw(void) {
+    uint8_t keys[IMGDIAG_MAXKEYS][8]; int n = 0, hit = -1;
+    if (!imgdiag_match(keys, &n, &hit)) return;
+    imgdiag_snapshot s; memset(&s, 0, sizeof s);
+    s.frame = atomic_load(&g_cur_frame); s.pass = g_stat_pass; s.draw = ++g_idg_draws; s.cmd = g_idg_cmd;
+    s.nkeys = n; s.keys_cached = 1; s.hit_index = hit; memcpy(s.keys, keys, sizeof keys);
+    imgdiag_copy_sources(s.slot);                  // bounded per-slot source metadata (last real OP_BIND_IMG)
+    pthread_mutex_lock(&g_rmu);                    // descriptor scalars copied out of the registry; no Metal objects
+    for (int k = 0; k < IMGDIAG_SLOTS; k++) {
+        uint64_t h = S.img[1][k];
+        if (!h) continue;
+        s.slot[k].handle = h;
+        s.slot[k].serial = h_ser(h);               // pool handle -> serial, the same read-only reader the renderer uses
+        int tid = (int)(h & 0xfffff);
+        if (tid > 0 && tid < (1 << 20) && g_treg[tid].ok) {
+            s.slot[k].registered = 1;
+            s.slot[k].fmt = (uint32_t)g_treg[tid].t.d.format;
+            s.slot[k].w = g_treg[tid].t.d.width; s.slot[k].h = g_treg[tid].t.d.height;
+            s.slot[k].depth = g_treg[tid].t.d.depth; s.slot[k].type = (uint32_t)g_treg[tid].t.d.target;
+        } else s.slot[k].serial = 0;               // unknown id: raw handle only, descriptor reported unavailable
+    }
+    pthread_mutex_unlock(&g_rmu);
+    static char buf[IMGDIAG_REC];
+    uint8_t t[8]; imgdiag_target(t);
+    if (imgdiag_format(buf, sizeof buf, &s, t, "DM_NVN_IMGBIND")) MLOG("%s", buf);   // one call, one buffer
+    imgdiag_disarm();
+}
+static void imgdiag_draw_skipped(void) {   // the command was skipped by conditional rendering before reaching draw()
+    uint8_t keys[IMGDIAG_MAXKEYS][8]; int n = 0, hit = -1;
+    if (imgdiag_match(keys, &n, &hit)) imgdiag_note_skipped();
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     gpu_capture_draw(atomic_load(&g_cur_frame));
     vb_overlap_check(di);
@@ -7231,11 +7288,12 @@ void mtl_exec(const uint8_t *p) {
                 PD("c %llu depth-stencil clear recorded ser=%llu depth=%g depth_mask=%d stencil=%d stencil_mask=%#x", g_stat_pass, R.rt.depth ? (unsigned long long)R.rt.depth->serial : 0ull, c->depth, c->depth_mask, c->stencil, c->stencil_mask);
                 break;
             }
-            case OP_DRAW: if (g_rc_skip) break; g_exec_next = p + h.size; draw(a, NULL); g_exec_next = NULL; break;   // Lookahead start point
-            case OP_DRAW_IDX: if (g_rc_skip) break; g_exec_next = p + h.size; draw(NULL, a); g_exec_next = NULL; break;
+            case OP_DRAW: if (g_rc_skip) { imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); draw(a, NULL); g_exec_next = NULL; break;   // Lookahead start point
+            case OP_DRAW_IDX: if (g_rc_skip) { imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); draw(NULL, a); g_exec_next = NULL; break;
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_SCISSOR: case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
-            case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
+            case OP_BIND_IMG: imgdiag_bind(a); state_op(OP_BIND_IMG, a); break;   // split out: the source log must see the real replay only
+            case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_STENCIL:
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_BLEND_COLOR: case OP_COPY_STRIDE:
                 state_op(h.op, a); break;
             case OP_COPY_B2T: copy_b2t(a); break;
