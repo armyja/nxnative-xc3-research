@@ -18,8 +18,11 @@
 
 enum { MB_OK = 0, MB_E_RANGE = 1, MB_E_BUDGET = 2, MB_E_EFFECT = 3, MB_E_CAP = 4 };
 
-// The VM effect: apply the permission change for [off, off+size) (map = 1) or release it (map = 0).
-// Returns 0 when the pages really changed, non-zero when the platform refused. Called with the budget lock held.
+// The VM effect, called with the budget lock held, before anything is committed.
+//   map == 1: alias map,     arg1 = offset in the alias region, arg2 = size
+//   map == 0: alias unmap,   arg1 = offset, arg2 = size
+//   map == 2: heap resize,   arg1 = heap size before this transaction (from the lock), arg2 = the new size
+// Returns 0 when the pages really changed, non-zero when the platform refused; a refusal commits nothing.
 typedef int (*mb_effect)(void *ctx, uint64_t off, uint64_t size, int map);
 
 typedef struct {
@@ -30,7 +33,6 @@ typedef struct {
 } mb_result;
 
 void mb_init(uint64_t alias_cap, uint64_t budget, uint64_t fixed_bytes);
-void mb_set_fixed(uint64_t fixed_bytes);
 void mb_set_heap_cap(uint64_t cap);
 
 int mb_map(uint64_t off, uint64_t size, mb_effect fx, void *ctx, mb_result *r);

@@ -20,11 +20,11 @@ t_nvn: t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(G
 	clang $(CFLAGS) -fobjc-arc -o $@ t_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(FW)
 # guest physical-memory budget (heap + alias pages against the application pool): no game profile, no GPU
 t_membudget: t_membudget.c ../../host/membudget.c ../../host/membudget.h
-	clang -O1 -Wall -o $@.$@ t_membudget.c ../../host/membudget.c && ./$@.$@
+	clang -O1 -Wall -o $@.$@ t_membudget.c ../../host/membudget.c ../../host/membudget_vm.c && ./$@.$@
 t_membudget_race: t_membudget_race.c ../../host/membudget.c ../../host/membudget.h
-	clang -O1 -Wall -o $@.$@ t_membudget_race.c ../../host/membudget.c && ./$@.$@
-t_membudget_vm: t_membudget_vm.c ../../host/membudget.c ../../host/membudget.h
-	clang -O1 -Wall -o $@.$@ t_membudget_vm.c ../../host/membudget.c && ./$@.$@
+	clang -O1 -Wall -o $@.$@ t_membudget_race.c ../../host/membudget.c ../../host/membudget_vm.c && ./$@.$@
+t_membudget_vm: t_membudget_vm.c ../../host/membudget.c ../../host/membudget_vm.c ../../host/membudget.h ../../host/membudget_vm.h
+	clang -O1 -Wall -o $@.$@ t_membudget_vm.c ../../host/membudget.c ../../host/membudget_vm.c && ./$@.$@
 t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c
 t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h

@@ -2,6 +2,7 @@
 // Register convention: inputs w1.. / outputs w0=Result, x1=value (GetInfo / SetHeapSize), consistent with the public Horizon ABI.
 #include "dm.h"
 #include "membudget.h"
+#include "membudget_vm.h"
 #include <sys/mman.h>
 #include <errno.h>
 #include <unistd.h>
@@ -18,9 +19,10 @@
 // with an 8 GB reservation, builds from developer accounts that cannot sign that entitlement (free accounts) would exit at this step.
 #define RESERVE DM_GAME_MEM_RESERVE   // SMBW: the heap needs only 1.47 GB, so the block stays at 5 GB like D2R (the total proven on a real device; a single 6 GB block can be reserved, but Metal etc. still need address space)
 static uint8_t *g_as;              // ASLR region base = the whole block
-static uint8_t *g_heap; static size_t g_heap_cur, g_heap_cap;
+static uint8_t *g_heap; static size_t g_heap_cap;
+static mb_vm_ctx g_vmctx;   // the production VM adapters' context (membudget_vm.c)
 // The address range lies entirely within the currently opened (readable and writable) part of the guest heap: such reads need no kernel trap to check, memcpy directly (used where guest memory is read every tick, such as diag.c tk_rd)
-int dm_guest_heap_readable(uint64_t a, size_t n) { uint64_t b = (uint64_t)(uintptr_t)g_heap; size_t cur = g_heap_cur; return g_heap && a >= b && n <= cur && a - b <= cur - n; }
+int dm_guest_heap_readable(uint64_t a, size_t n) { uint64_t b = (uint64_t)(uintptr_t)g_heap; size_t cur = mb_heap(); return g_heap && a >= b && n <= cur && a - b <= cur - n; }
 static uint8_t *g_alias; static size_t g_alias_cap;
 static uint8_t *g_stack; static size_t g_stack_cap;
 // The address lies in the guest address block (every guest thread stack is here: the game's own heap or the stack region); the big-stack entry (hle_bigstack.c) uses it to decide whether to switch stacks
@@ -46,6 +48,7 @@ static void mem_init(void) {
     // profile's mem_used + module bss) + heap + unique mapped alias pages, against the application pool.
     mb_init(g_alias_cap, APP_POOL, DM_GAME_MEM_USED + big_bss_bytes());
     mb_set_heap_cap(g_heap_cap);
+    g_vmctx.alias = g_alias; g_vmctx.heap = g_heap;
     LOG("guest AS %p +%#llx  heap %p alias %p stack %p", g_as, (unsigned long long)RESERVE, g_heap, g_alias, g_stack);
 }
 
@@ -89,26 +92,6 @@ static void map_del(int i) { g_map[i] = g_map[--g_nmap]; }   // caller holds g_m
 // One bit per 4 KB page of the alias region (mapped = 1): Map sets bits, Unmap clears them; returns the number of pages whose state really changed (signed: positive for Map, negative for Unmap)
 // the alias page bitmap and its budget live in membudget.c, which Map/Unmap/SetHeapSize and GetInfo share
 
-// The VM side of the budget transactions: the permission change runs inside membudget's lock, so the accounting
-// and the real page state can never be left disagreeing by two threads.
-static int alias_effect(void *ctx, uint64_t off, uint64_t size, int map) {
-    (void)ctx;
-    uint8_t *a = g_alias + off;
-    uintptr_t pg = (uintptr_t)getpagesize(), lo = (uintptr_t)a, hi = lo + size;
-    uintptr_t mlo = map ? lo & ~(pg - 1) : (lo + pg - 1) & ~(pg - 1);
-    uintptr_t mhi = map ? (hi + pg - 1) & ~(pg - 1) : hi & ~(pg - 1);
-    if (mhi <= mlo) return 0;
-    if (map) return mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE) ? -1 : 0;
-    madvise((void *)mlo, mhi - mlo, MADV_FREE);            // host pages are 16 KB, Horizon pages 4 KB
-    return mprotect((void *)mlo, mhi - mlo, PROT_NONE) ? -1 : 0;
-}
-static int heap_effect(void *ctx, uint64_t off, uint64_t size, int map) {
-    (void)ctx; (void)off; (void)map;
-    if (size == g_heap_cur) return 0;
-    if (size > g_heap_cur) return mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE) ? -1 : 0;
-    return mprotect(g_heap + size, g_heap_cur - size, PROT_NONE) ? -1 : 0;
-}
-
 int svc_thread(int num, uint64_t *regs);   // hle_thread.c: thread and synchronization kind
 
 uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
@@ -131,13 +114,12 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // the heap comes out of the same pool the alias mappings draw from; the permission change happens inside
         // that transaction, and a refusal (pool, region or mprotect) leaves the heap exactly as it was
         mb_result hr;
-        int hrc = mb_set_heap(size, heap_effect, NULL, &hr);
+        int hrc = mb_set_heap(size, mb_vm_heap, &g_vmctx, &hr);
         if (hrc == MB_E_BUDGET) { static int once2; if (!once2++) LOG("[mem] SetHeapSize %#zx refused: heap+fixed+alias %#llx > app pool %#llx", size, (unsigned long long)hr.used_after, (unsigned long long)APP_POOL); regs[0] = 0x10801; return 0; }
         if (hrc == MB_E_CAP) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD401; return 0; }
-        if (hrc != MB_OK) { LOG("SetHeapSize %#zx: mprotect failed errno=%d, heap unchanged at %#zx", size, errno, g_heap_cur); regs[0] = 0xD401; return 0; }
+        if (hrc != MB_OK) { LOG("SetHeapSize %#zx: mprotect failed errno=%d, heap unchanged at %#zx", size, errno, (size_t)hr.heap_after); regs[0] = 0xD401; return 0; }
         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p", size, g_heap);
-        else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
-        g_heap_cur = size;
+        else if (size > hr.used_before - mb_alias()) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
         regs[0] = 0; regs[1] = (uint64_t)g_heap; return 0;
     }
     case 0x02: regs[0] = 0; return 0;   // SetMemoryPermission
@@ -174,11 +156,12 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         uint64_t base, size, state, perm;
         int k;
         pthread_mutex_lock(&g_map_lock);   // the registry branches read g_map; the other branches are cheap, so the lock simply spans the whole chain
-        if (a >= g_heap && a < g_heap + g_heap_cur) { base=(uint64_t)g_heap; size=g_heap_cur; state=5/*Heap*/; perm=3; }
+        size_t hcur = mb_heap();
+        if (a >= g_heap && a < g_heap + hcur) { base=(uint64_t)g_heap; size=hcur; state=5/*Heap*/; perm=3; }
         else if ((k = map_find(addr, 1))) { base=g_map[k-1].base; size=g_map[k-1].size; state=g_map[k-1].state; perm=3; }
         else if (a >= g_as && a < g_as + RESERVE) {   // free: up to the adjacent mapping/heap boundary
             uint64_t lo = (uint64_t)g_as, hi = (uint64_t)g_as + RESERVE;
-            if (a >= g_heap) lo = (uint64_t)g_heap + g_heap_cur;
+            if (a >= g_heap) lo = (uint64_t)g_heap + hcur;
             else if (hi > (uint64_t)g_heap) hi = (uint64_t)g_heap;
             for (int i = 0; i < g_nmap; i++) {
                 uint64_t e = g_map[i].base + g_map[i].size;
@@ -220,7 +203,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // happen under membudget's lock, so two threads cannot interleave into "bitmap says mapped, page says no".
         mb_result mr;
         uint64_t off = a >= g_alias ? (uint64_t)(a - g_alias) : UINT64_MAX;   // outside the region -> range error
-        int mrc = num == 0x2C ? mb_map(off, size, alias_effect, NULL, &mr) : mb_unmap(off, size, alias_effect, NULL, &mr);
+        int mrc = num == 0x2C ? mb_map(off, size, mb_vm_alias, &g_vmctx, &mr) : mb_unmap(off, size, mb_vm_alias, &g_vmctx, &mr);
         if (mrc == MB_E_RANGE) { LOG("SVC %#x outside the alias region %p+%#zx", num, a, size); regs[0] = 0xD401; return 0; }
         if (mrc == MB_E_BUDGET) {
             LOG("[mem] %sPhysicalMemory %p+%#zx refused: new %#llu used %#llu + new > app pool %#llu", num == 0x2C ? "Map" : "Unmap",

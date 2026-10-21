@@ -26,7 +26,6 @@ void mb_init(uint64_t alias_cap, uint64_t budget, uint64_t fixed_bytes) {
     if (g_pages) memset(g_bits, 0, ((g_pages + 63) / 64) * sizeof *g_bits);
     pthread_mutex_unlock(&g_lock);
 }
-void mb_set_fixed(uint64_t fixed_bytes) { pthread_mutex_lock(&g_lock); g_fixed = fixed_bytes; pthread_mutex_unlock(&g_lock); }
 void mb_set_heap_cap(uint64_t cap) { pthread_mutex_lock(&g_lock); g_heap_cap = cap; pthread_mutex_unlock(&g_lock); }
 
 // A range is valid when it is non-empty, page-aligned and inside the alias region, checked by subtraction so no
@@ -109,7 +108,7 @@ int mb_set_heap(uint64_t size, mb_effect fx, void *ctx, mb_result *r) {
     if (size > g_heap_cap) { o->rc = MB_E_CAP; snap(o); goto out; }
     uint64_t used = g_fixed + g_alias;                  // the heap part is replaced, not added
     if (used > g_budget || size > g_budget - used) { o->rc = MB_E_BUDGET; snap(o); goto out; }
-    if (fx && fx(ctx, 0, size, 2)) { o->rc = MB_E_EFFECT; snap(o); goto out; }   // effect refused: heap unchanged
+    if (fx && fx(ctx, g_heap, size, 2)) { o->rc = MB_E_EFFECT; snap(o); goto out; }   // old size from this lock; refused: heap unchanged
     g_heap = size;
     o->rc = MB_OK; snap(o);
 out:
