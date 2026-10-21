@@ -3301,6 +3301,26 @@ static NSMutableDictionary<NSString *, id<MTLFunction>> *g_bf_fn_cache;
 static NSMutableDictionary<NSString *, id<MTLLibrary>> *g_bf_lib_cache;
 static nvn_hmap g_pso = {.klen = sizeof(pso_key)}, g_dss;
 static nvn_hmap g_pso_fail = {.klen = sizeof(pso_key)};   // pipelines that failed to build: remembered and never retried (previously every draw recompiled it, over 10,000 times in one iPhone session)
+// Integer colour formats cannot blend (Metal validation asserts: "Blending is enabled for render target N; however the
+// pixelformat MTLPixelFormat...Uint ... is not blendable"). Maxwell applies the blend state only to formats that support
+// it, so a title that asks for blending on an integer target is not doing anything wrong; the state simply must not be
+// applied here. Found on Xenoblade Chronicles 3's first 3D scene: RG32Uint/R32Uint targets aborted the process.
+static int fmt_is_integer(MTLPixelFormat f) {
+    switch (f) {
+        case MTLPixelFormatR8Uint: case MTLPixelFormatR8Sint:
+        case MTLPixelFormatR16Uint: case MTLPixelFormatR16Sint:
+        case MTLPixelFormatRG8Uint: case MTLPixelFormatRG8Sint:
+        case MTLPixelFormatR32Uint: case MTLPixelFormatR32Sint:
+        case MTLPixelFormatRG16Uint: case MTLPixelFormatRG16Sint:
+        case MTLPixelFormatRGBA8Uint: case MTLPixelFormatRGBA8Sint:
+        case MTLPixelFormatRGB10A2Uint:
+        case MTLPixelFormatRG32Uint: case MTLPixelFormatRG32Sint:
+        case MTLPixelFormatRGBA16Uint: case MTLPixelFormatRGBA16Sint:
+        case MTLPixelFormatRGBA32Uint: case MTLPixelFormatRGBA32Sint:
+            return 1;
+        default: return 0;
+    }
+}
 static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLFunction> fsfn, int merged) {
     MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
     d.vertexFunction = vs->fn; d.fragmentFunction = fsfn ? fsfn : fs ? fs->fn : nil;
@@ -3330,7 +3350,10 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
         int unwritten = fs && fs->rf.color_known && !fsfn && l != 0xff && !(fs->rf.color_mask >> l & 1);
         if (unwritten) m = 0;
         c.writeMask = (m & 1 ? MTLColorWriteMaskRed : 0) | (m & 2 ? MTLColorWriteMaskGreen : 0) | (m & 4 ? MTLColorWriteMaskBlue : 0) | (m & 8 ? MTLColorWriteMaskAlpha : 0);
-        if (l != 0xff && k->blend_en >> l & 1 && !unwritten) {
+        int intfmt = fmt_is_integer(c.pixelFormat);
+        if (l != 0xff && k->blend_en >> l & 1 && !unwritten && intfmt)
+            RED_ONCE(72, "render target %d is an integer format (%lu): blend state not applied (Metal cannot blend integer targets)", i, (unsigned long)c.pixelFormat);
+        if (l != 0xff && k->blend_en >> l & 1 && !unwritten && !intfmt) {
             c.blendingEnabled = YES;
             c.sourceRGBBlendFactor = bfac(k->blend[l].src_rgb); c.destinationRGBBlendFactor = bfac(k->blend[l].dst_rgb);
             c.sourceAlphaBlendFactor = bfac(k->blend[l].src_a); c.destinationAlphaBlendFactor = bfac(k->blend[l].dst_a);
