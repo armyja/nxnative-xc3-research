@@ -3,17 +3,19 @@
 // no guest memory read. The caller (nvn_mtl.m) owns the real prog_t and the replay state.
 #pragma once
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define SSBO_OBS_SLOTS 16
 #define SSBO_OBS_STAGES 6        // real prog_t capacity: nvn_obj.h has sd[6], ProgramSetShaders rejects n > 6
-#define SSBO_OBS_MAXKEYS 8       // record bound: never truncate a larger nstage and call it complete
+#define SSBO_OBS_MAXKEYS SSBO_OBS_STAGES   // the real capacity, so the loop bound cannot exceed it
 
 typedef struct { uint8_t known, index; uint64_t frame, seq; } ssbo_obs_binding;
 typedef struct {
     int mode;                    // 0 off, 1 armed, 2 closed (done, invalid or format error)
     uint8_t key[8];
-    uint8_t skips, unknown, invalid, done;
+    uint64_t skips, unknown, invalid;          // saturated counters, never used as "already reported" flags
+    uint8_t rep_skip, rep_unknown, rep_invalid, done;   // one report per kind per run
     uint64_t obs_seq, bind_seq, frame, pass_counter;
     ssbo_obs_binding lb[SSBO_OBS_SLOTS];   // vertex stage only; updated by real OP_BIND_SSBO
 } ssbo_obs_state;

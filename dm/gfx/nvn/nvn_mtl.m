@@ -7348,37 +7348,70 @@ static void ssbo_obs_arm(void) {
     g_so.mode = 1;
     MLOG("DM_NVN_SSBO_OBS=%s: read-only vertex storage-buffer provenance armed (one snapshot at the first real draw of that vertex program)", e);
 }
+// Lookup-only identity of the bound vertex program. Fills keys/known when the caller wants them; never creates, hashes,
+// or reads control/data. keys and known may be NULL.
+static int ssbo_obs_identify(const prog_t *p, uint8_t keys[][8], uint8_t *known_out, unsigned *n_out, unsigned *cap_out, int *hit_out) {
+    unsigned cap = (unsigned)(sizeof p->sd / sizeof p->sd[0]);
+    unsigned n = p->nstage;
+    *n_out = n; *cap_out = cap; *hit_out = -1;
+    unsigned known = 0;
+    if (n == 0 || n > cap || n > SSBO_OBS_MAXKEYS) { if (known_out) *known_out = 0; return SSBO_OBS_INVALID_COUNT; }
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t k[8];
+        if (!prog_key_cached(p, i, k)) { if (known_out) known_out[i] = 0; continue; }
+        known++;
+        if (keys) memcpy(keys[i], k, 8);
+        if (known_out) known_out[i] = 1;
+        if (*hit_out < 0 && !memcmp(k, g_so.key, 8)) *hit_out = (int)i;
+    }
+    if (known_out == NULL) { /* skip path: count only */ }
+    return ssbo_obs_verdict(n, cap, known, *hit_out);
+}
+static unsigned ssbo_obs_known_count(const uint8_t *known, unsigned n) { unsigned k = 0; for (unsigned i = 0; i < n; i++) k += known[i] != 0; return k; }
+static void ssbo_obs_note_unknown(unsigned n, unsigned known) {
+    if (g_so.unknown < UINT64_MAX) g_so.unknown++;
+    if (g_so.rep_unknown) return;
+    g_so.rep_unknown = 1;
+    MLOG("[ssbo-obs] identity-unavailable: %u of %u shader-data keys of the bound vertex program were readable; this draw's identity is unknown, not evidence that the target is absent", known, n);
+}
+static void ssbo_obs_note_invalid(unsigned n, unsigned cap) {
+    if (g_so.invalid < UINT64_MAX) g_so.invalid++;
+    if (g_so.rep_invalid) return;
+    g_so.rep_invalid = 1;
+    MLOG("[ssbo-obs] invalid nstage=%u (real capacity %u, record bound %d): identity-unavailable, no truncation", n, cap, SSBO_OBS_MAXKEYS);
+}
 static void ssbo_obs_bind(const void *a) {                    // real replay only (not the lookahead scans)
     if (g_so.mode != 1) return;
     const p_bind_buf *b = a;
     ssbo_obs_note_bind(&g_so, b->stage, b->index, (uint64_t)atomic_load(&g_cur_frame), ++g_so.bind_seq);
 }
+static void ssbo_obs_draw_skipped(void) {                     // real replay only, render-condition skip before draw()
+    if (g_so.mode != 1) return;                               // off / invalid / closed: no key query, no counter change
+    const prog_t *p = S.bst[0];
+    if (!p) return;
+    uint8_t known[SSBO_OBS_MAXKEYS]; unsigned n, cap, nk; int hit;
+    memset(known, 0, sizeof known);
+    int v = ssbo_obs_identify(p, NULL, known, &n, &cap, &hit);
+    if (v == SSBO_OBS_HIT) {
+        if (g_so.skips < UINT64_MAX) g_so.skips++;
+        if (!g_so.rep_skip) { g_so.rep_skip = 1; MLOG("[ssbo-obs] target draw known-skipped by the render condition (frame %llu); the observation stays armed", (unsigned long long)atomic_load(&g_cur_frame)); }
+        return;                                               // still armed: a later real draw may hit
+    }
+    nk = ssbo_obs_known_count(known, n <= SSBO_OBS_MAXKEYS ? n : SSBO_OBS_MAXKEYS);
+    if (v == SSBO_OBS_UNKNOWN) { ssbo_obs_note_unknown(n, nk); return; }
+    if (v == SSBO_OBS_INVALID_COUNT) ssbo_obs_note_invalid(n, cap);
+}
 static void ssbo_obs_draw(void) {                             // real replay draw only, before draw()
-    if (g_so.mode != 1) return;
+    if (g_so.mode != 1) return;                               // inert when off, invalid or closed
     const prog_t *p = S.bst[0];
     if (!p) return;                                           // no vertex binding: nothing unreadable, silent
-    unsigned cap = (unsigned)(sizeof p->sd / sizeof p->sd[0]);
-    unsigned n = p->nstage;
+    uint8_t keys[SSBO_OBS_MAXKEYS][8], known[SSBO_OBS_MAXKEYS]; unsigned n, cap, nk; int hit;
+    memset(known, 0, sizeof known);
     g_so.obs_seq++;
-    if (n == 0 || n > cap) {
-        if (++g_so.invalid == 1) MLOG("[ssbo-obs] invalid nstage=%u (real capacity %u): identity-unavailable, no truncation", n, cap);
-        return;
-    }
-    uint8_t known[SSBO_OBS_MAXKEYS], keys[SSBO_OBS_MAXKEYS][8]; unsigned nk = 0; int hit = -1;
-    for (unsigned i = 0; i < n && i < SSBO_OBS_MAXKEYS; i++) {
-        known[i] = (uint8_t)prog_key_cached(p, i, keys[i]);
-        if (known[i]) { nk++; if (hit < 0 && !memcmp(keys[i], g_so.key, 8)) hit = (int)i; }
-    }
-    if (n > SSBO_OBS_MAXKEYS) {                               // beyond the record bound: fail closed, never truncate
-        if (++g_so.invalid == 1) MLOG("[ssbo-obs] nstage=%u exceeds the record bound %d: identity-unavailable", n, SSBO_OBS_MAXKEYS);
-        return;
-    }
-    int v = ssbo_obs_verdict(n, cap, nk, hit);
-    if (v == SSBO_OBS_UNKNOWN) {
-        if (++g_so.unknown == 1)
-            MLOG("[ssbo-obs] identity-unavailable: %u of %u shader-data keys of the bound vertex program were readable; this draw's identity is unknown, not evidence that the target is absent", nk, n);
-        return;
-    }
+    int v = ssbo_obs_identify(p, keys, known, &n, &cap, &hit);
+    nk = ssbo_obs_known_count(known, n <= SSBO_OBS_MAXKEYS ? n : SSBO_OBS_MAXKEYS);
+    if (v == SSBO_OBS_INVALID_COUNT) { ssbo_obs_note_invalid(n, cap); return; }
+    if (v == SSBO_OBS_UNKNOWN) { ssbo_obs_note_unknown(n, nk); return; }
     if (v != SSBO_OBS_HIT) return;                            // all cached and no match: no target this draw, silent
     uint64_t addr[SSBO_OBS_SLOTS], size[SSBO_OBS_SLOTS];
     for (int i = 0; i < SSBO_OBS_SLOTS; i++) { addr[i] = S.ssbo[0][i].addr; size[i] = S.ssbo[0][i].size; }
@@ -7389,7 +7422,10 @@ static void ssbo_obs_draw(void) {                             // real replay dra
         if (known[i]) snprintf(one, sizeof one, "%02x%02x%02x%02x%02x%02x%02x%02x", keys[i][0], keys[i][1], keys[i][2], keys[i][3], keys[i][4], keys[i][5], keys[i][6], keys[i][7]);
         else snprintf(one, sizeof one, "unknown");
         int w = snprintf(kb + ko, sizeof kb - ko, "%s%d=%s", i ? "," : "", (int)i, one);
-        if (w < 0 || (size_t)w >= sizeof kb - ko) { ko = 0; break; }
+        if (w < 0 || (size_t)w >= sizeof kb - ko) {
+            MLOG("[ssbo-obs] diagnostic-error: key list does not fit its bound; closed without a done line");
+            g_so.mode = 2; return;
+        }
         ko += (size_t)w;
     }
     char b[512];
@@ -7397,11 +7433,11 @@ static void ssbo_obs_draw(void) {                             // real replay dra
                      g_so.key[0], g_so.key[1], g_so.key[2], g_so.key[3], g_so.key[4], g_so.key[5], g_so.key[6], g_so.key[7],
                      (unsigned long long)atomic_load(&g_cur_frame), (unsigned long long)g_so.obs_seq, (unsigned long long)g_stat_pass,
                      n, nk, n, hit, cand, amb, kb);
-    if (r < 0 || (size_t)r >= sizeof b) { if (++g_so.invalid == 1) MLOG("[ssbo-obs] record header does not fit its bound: diagnostic closed"); g_so.mode = 2; return; }
+    if (r < 0 || (size_t)r >= sizeof b) { MLOG("[ssbo-obs] diagnostic-error: record header does not fit its bound; closed without a done line"); g_so.mode = 2; return; }
     MLOG("%s", b);
     for (int i = 0; i < SSBO_OBS_SLOTS; i++) {
         if (ssbo_obs_fmt_slot(b, sizeof b, i, addr[i], size[i], &g_so.lb[i]) < 0) {
-            if (++g_so.invalid == 1) MLOG("[ssbo-obs] slot %d record does not fit its bound: diagnostic closed with an incomplete record", i);
+            MLOG("[ssbo-obs] diagnostic-error: slot %d does not fit its bound; closed without a done line", i);
             g_so.mode = 2; return;
         }
         MLOG("%s", b);
@@ -7409,7 +7445,6 @@ static void ssbo_obs_draw(void) {                             // real replay dra
     MLOG("[ssbo-obs] done key=%02x%02x%02x%02x%02x%02x%02x%02x slots=16 candidates=%d ambiguous=%d", g_so.key[0], g_so.key[1], g_so.key[2], g_so.key[3], g_so.key[4], g_so.key[5], g_so.key[6], g_so.key[7], cand, amb);
     g_so.done = 1; g_so.mode = 2;
 }
-
 void mtl_exec(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; state_reset(); }
     ssbo_obs_arm();
@@ -7519,8 +7554,8 @@ void mtl_exec(const uint8_t *p) {
                 PD("c %llu depth-stencil clear recorded ser=%llu depth=%g depth_mask=%d stencil=%d stencil_mask=%#x", g_stat_pass, R.rt.depth ? (unsigned long long)R.rt.depth->serial : 0ull, c->depth, c->depth_mask, c->stencil, c->stencil_mask);
                 break;
             }
-            case OP_DRAW: if (g_rc_skip) { g_so.skips++; imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); ssbo_obs_draw(); draw(a, NULL); g_exec_next = NULL; break;   // Lookahead start point
-            case OP_DRAW_IDX: if (g_rc_skip) { g_so.skips++; imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); ssbo_obs_draw(); draw(NULL, a); g_exec_next = NULL; break;
+            case OP_DRAW: if (g_rc_skip) { ssbo_obs_draw_skipped(); imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); ssbo_obs_draw(); draw(a, NULL); g_exec_next = NULL; break;   // Lookahead start point
+            case OP_DRAW_IDX: if (g_rc_skip) { ssbo_obs_draw_skipped(); imgdiag_draw_skipped(); break; } g_exec_next = p + h.size; imgdiag_draw(); ssbo_obs_draw(); draw(NULL, a); g_exec_next = NULL; break;
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             // One case of its own, NOT inside the label chain below: a label chain shares one body, so inserting a case in
             // the middle makes every earlier label fall into it and run that body with the wrong opcode.
