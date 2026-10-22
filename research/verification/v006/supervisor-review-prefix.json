@@ -1,0 +1,22 @@
+{
+  "decision": "changes-required",
+  "finding": "V006.F6",
+  "severity": "high",
+  "claim": "Production MLOG-prefixed tf-intent is ignored by both chain and supervisor capture; no record completion and raw missing.",
+  "verified_evidence_sha256": {
+    "report.md": "6341ff14818472a6ebf4343e753465ab978a9e19e12a543e8c6c0eab6c71d7bf",
+    "result.json": "6ddda12e53c9d47331c77a8892e0eff991122f94a26fc026bb0353d4c0898a01",
+    "evidence/sha256sums.txt": "1d54d8033c635932a001dcdf31bb086c40e46872839ae16cd55bb5ef804fd7d2"
+  },
+  "F1_cleanup_implication": "KeyError escapes evidence try/except OSError in finally, skipping child cleanup and timing output.",
+  "implementation_task": "codex-xc3-v006-plan-fix-6065a1d9c0074770a2ac9a7fbfdec492",
+  "disposition": "Already included in active implementation task; no duplicate dispatch.",
+  "required_retest": [
+    "Real-prefixed complete chain reaches hit",
+    "Actual prefixed raw retained by chain and supervisor",
+    "Bare counterpart still accepted",
+    "Unrecognized prefixes do not gain acceptance",
+    "Evidence exceptions cannot bypass child cleanup"
+  ],
+  "route": "NO-GO"
+}

@@ -1,0 +1,35 @@
+{
+  "task": "V004",
+  "candidate": "tf-diag-a2c-v004",
+  "decision": "changes-required",
+  "evidence_result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/result.json",
+  "result_sha256": "8736c0e42174258a1a44f60bf50cd2d470b191151ee856beb0139a27a0e26613",
+  "findings": [
+    {
+      "id": "F1",
+      "contract": "D04",
+      "action": "explicit KDR_HIT gate at shared emit exit before snapshot/format"
+    },
+    {
+      "id": "F2",
+      "contract": "D02",
+      "action": "publish effective ON only after complete successful installation; failure remains disabled",
+      "clarification": "slot writes are all-or-none; defect is mode/observer enablement after zero installation"
+    }
+  ],
+  "retained_evidence": [
+    "D01 immutable startup mode CPU",
+    "D02 all-or-none slot writes CPU",
+    "D03 typed recording CPU",
+    "D05 formatting CPU",
+    "D06 bounded inheritance"
+  ],
+  "limitations": [
+    "PROF forwarding not executed",
+    "full kd_res_line entry not executed",
+    "init concurrency not verified",
+    "MLOG write durability not verified",
+    "no host or GPU execution"
+  ],
+  "route": "NO-GO"
+}

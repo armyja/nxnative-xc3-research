@@ -1,0 +1,13 @@
+# DEFAULT-ONLY except one candidate row: no resource facts are known for this title, and every texture / image /
+# attribute / compute query is still answered with the translator default. The single row below adds fragment-output
+# component types for one pixel shader, from an offline observation (see provenance-fout-uint-two-key.md), not from PC
+# reflection. A row's presence does not mean that shader's other resources are answered.
+4bae5b8abd3bec7f	{"attr":{},"fout":{"0":"uint","1":"uint"},"img":{},"pc_missing":true,"tex":{}}
+531d637463e53486	{"attr":{},"fout":{"2":"uint"},"img":{},"pc_missing":true,"tex":{}}
+d3c541d46f389225	{"attr":{},"fout":{"3":"uint"},"img":{},"pc_missing":true,"tex":{}}
+06f1dcc9c37acf00	{"attr":{},"fout":{"0":"uint","1":"uint"},"img":{},"pc_missing":true,"tex":{}}
+c9d762917edfee9f	{"attr":{},"fout":{"0":"uint","1":"uint"},"img":{},"pc_missing":true,"tex":{}}
+885bb4caecc378cf	{"attr":{},"fout":{"0":"uint","1":"uint"},"img":{},"pc_missing":true,"tex":{}}
+15816d836842bfb5	{"attr":{},"fout":{"0":"uint","1":"uint"},"img":{},"pc_missing":true,"tex":{}}
+4b9a4e60d5ee5f16	{"attr":{},"fout":{"0":"uint","1":"uint"},"img":{},"pc_missing":true,"tex":{}}
+aadd1c2efa076cc3	{"attr":{},"fout":{"0":"uint","1":"uint"},"img":{},"pc_missing":true,"tex":{}}

@@ -1,0 +1,45 @@
+{
+  "task": "V001",
+  "candidate": "tf-diag-a1-a2a-v001",
+  "decision": "accepted-limited-cpu-checkpoint",
+  "candidate_manifest_sha256": "2ba2f76a15ff5e565e33caef2474e342a9f079abcb06a5259ebf13fbfa83c995",
+  "validator_report_sha256": "72e330b66c4d356dc6f103de31f271ebc8406c0d016e642cfa12d9b8863d31c8",
+  "validator_result_sha256": "cf93eb75ddeb0d6ee7c49e5efde7aae6abc3d22fc8a0bd8061c0d6c15b6cd5dc",
+  "accepted_contracts": [
+    "C01",
+    "C02",
+    "C03",
+    "C04",
+    "C05",
+    "C06",
+    "C07"
+  ],
+  "scope": "Named immutable candidate; CPU fixtures and disclosed subset executor only",
+  "excluded": [
+    "C08 full-feature integration",
+    "real host execution",
+    "NVN semantics",
+    "GPU TF output",
+    "scanner/barrier integration"
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "disposition": "required A2c startup-mode/lifecycle constraint; no runtime toggles; targeted revalidation before enabling producer"
+    },
+    {
+      "id": "F2",
+      "disposition": "nonblocking diagnostic reason cleanup; invalid kind remains fail-closed"
+    },
+    {
+      "id": "F3",
+      "disposition": "known trusted-stream boundary limitation; not memory-safety proof; producer and stream lifetime preconditions required before enabled host"
+    },
+    {
+      "id": "F4",
+      "disposition": "equivalent mutant / redundant guard; no fix required"
+    }
+  ],
+  "route": "NO-GO",
+  "next_verification": "V002"
+}

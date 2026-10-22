@@ -1,0 +1,28 @@
+{
+  "task": "V005",
+  "candidate": "tf-diag-a2c-fix-v005",
+  "decision": "accepted-limited-cpu-checkpoint",
+  "result_sha256": "1de38653b81c266f2c2357ea0daa55db844ca26b1ebf62af64693a4103282d36",
+  "resolved": [
+    "V004.F1 explicit HIT output guard",
+    "V004.F2 failed installation effective mode disabled / publish after success"
+  ],
+  "scope": "Extracted CPU initialization/installation/emit guard/formatter paths and body-SHA inheritance only",
+  "nonblocking": [
+    {
+      "id": "V005.F1",
+      "disposition": "effective INVALID collapses to OFF; acceptable for ON vs disabled contract"
+    }
+  ],
+  "limitations": [
+    "static init concurrency not verified",
+    "PROF/big forwarding body not executed",
+    "full kd_res_line entry not executed",
+    "MLOG durability not guaranteed",
+    "V001.F3 size is not memory boundary proof",
+    "full renderer/scanner optimizer paths not all executed",
+    "no real host or guest or GPU execution"
+  ],
+  "route": "NO-GO",
+  "implementation_scope_A_status": "source and bounded CPU validation checkpoint complete; no host build/execution approval"
+}

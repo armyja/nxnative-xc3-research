@@ -1,0 +1,25 @@
+{
+  "task": "V003",
+  "decision": "accepted-limited-cpu-checkpoint",
+  "candidate": "tf-diag-a2b-fix-v003",
+  "resolved": [
+    "V002.F1 mode-gating",
+    "V002.F2 scan-order latch"
+  ],
+  "evidence_result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/result.json",
+  "result_sha256": "82a39a1ecbad9959a414d24b045ad6c0697c9b23cbcb79a5a451af8d2c04a919",
+  "limitations": [
+    "hoist full planning not executed",
+    "full fuse plan not executed",
+    "defer main/Q execution not covered",
+    "sdx index construction not executed",
+    "frz full body not executed",
+    "CPU subset/stubs only; not GPU/NVN semantics"
+  ],
+  "inherited_open": [
+    "V001.F1 startup mode/lifecycle constraint",
+    "V001.F3 trusted-stream boundary limitation"
+  ],
+  "route": "NO-GO",
+  "next_scope": "A2c implementation candidate only; no host build or execution"
+}

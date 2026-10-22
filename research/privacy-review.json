@@ -1,0 +1,56 @@
+{
+  "archive_date": "2026-10-22",
+  "visibility_at_creation": "private",
+  "source_branch": "xc3",
+  "original_source_head": "14082571ea0a1ea515be64b963e4f4d7c39a3097",
+  "upstream": "https://github.com/seedds/nxnative",
+  "history_policy": "Only the xc3 branch; no mirror push or other branches/tags/stashes",
+  "removed_from_history": [
+    "docs/cuphead/",
+    "docs/images/",
+    "*.pdb"
+  ],
+  "normalized": [
+    "personal home/external volume paths",
+    "local session UUIDs and routing commands in research copies",
+    "one process-local address in an integration fixture"
+  ],
+  "excluded_from_archive_addition": [
+    "game packages and RomFS/ExeFS",
+    "original/patched game modules",
+    "raw ctl/code/shader packages",
+    "game-derived SPIR-V/MSL/AIR/metallib",
+    "textures/screenshots/saves",
+    "keys/credentials/signing material",
+    "host executables and object files",
+    "raw runtime logs and private conversations"
+  ],
+  "scanner": {
+    "tool": "gitleaks",
+    "version": "8.30.1",
+    "upstream": "https://github.com/gitleaks/gitleaks",
+    "download_sha256_verified": true,
+    "history_default_initial_findings": 3,
+    "initial_findings_classification": "shader identifiers / shader selection in source and local research prose; not authentication credentials",
+    "reviewed_rule_exception": ".gitleaks.toml limits generic-api-key exception to full 16-lowerhex shader identifiers, optionally _b/_bf",
+    "sanitized_history_findings": 0,
+    "archive_directory_findings": 0
+  },
+  "additional_checks": [
+    "All reachable original xc3 blob names and sizes screened",
+    "2670 original blobs inspected for home/volume paths and key markers",
+    "No original reachable blob exceeded 10 MiB",
+    "Research addition is text-only with filetype allowlist; no long embedded payload detected",
+    "Copied Python source parses with ast.parse; no module/game execution",
+    "Archive file provenance and SHA256 inventory generated"
+  ],
+  "limitations": [
+    "Automated screening is not a guarantee of absence of sensitive or copyrighted material",
+    "Upstream code and pinned translation tools retain their own authorship/licenses",
+    "Historical statements are retained with errata; they are not fresh runtime verification",
+    "Paths and manifests were normalized; tests/launchers require deliberate local reconstruction",
+    "No game/host/GPU execution was performed for archiving"
+  ],
+  "development_status": "paused",
+  "real_game_gs_tf_route": "NO-GO"
+}

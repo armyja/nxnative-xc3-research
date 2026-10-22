@@ -1,0 +1,250 @@
+{
+  "task": "V001",
+  "role": "independent verifier (no development, no fixes)",
+  "generated_at": "2026-10-22T10:52:39",
+  "candidate": {
+    "manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/candidate.json",
+    "manifest_sha256": "2ba2f76a15ff5e565e33caef2474e342a9f079abcb06a5259ebf13fbfa83c995",
+    "snapshot_root": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/candidate",
+    "repo": "/path/to/user/projects/nxnative-xc3",
+    "branch": "xc3",
+    "head": "14082571ea0a1ea515be64b963e4f4d7c39a3097",
+    "head_is_identity": false,
+    "files": [
+      {
+        "path": "dm/gfx/nvn/nvn_tf_diag.h",
+        "sha256": "016cced44cf564d07331c7d4d8f0b9454d4fd44ecf8794f5bc9363a12e8212ee",
+        "snapshot_matches": true
+      },
+      {
+        "path": "dm/gfx/nvn/nvn_obj.h",
+        "sha256": "8e9f93e2742d0e634c2451c1f6c8583bc262c253c56679c3b87cb1c8efb3221f",
+        "snapshot_matches": true
+      },
+      {
+        "path": "dm/gfx/nvn/hle_nvn.c",
+        "sha256": "36863fc4cc56cba3fe969766c094a204e5640abe7d81b7b77ffba09a5b29258b",
+        "snapshot_matches": true
+      },
+      {
+        "path": "dm/gfx/nvn/nvn_mtl.m",
+        "sha256": "bc0a209565b17823884df3501f659e91ddd99f5a3dab7b78541f3997e0749d25",
+        "snapshot_matches": true
+      },
+      {
+        "path": "dm/gfx/nvn/nvn_kd_res.h",
+        "sha256": "9956f931b3a25eb10c82a08fb926a0b5dd27789b315b55860e33ba26aaab4642",
+        "snapshot_matches": true
+      },
+      {
+        "path": "dm/gfx/nvn/nvn_protos.h",
+        "sha256": "a3750327d0ccbc535d3b4d30c326a84bdc972be33bca43cdf3b78a0b6737968d",
+        "snapshot_matches": true
+      },
+      {
+        "path": "AGENTS.md",
+        "sha256": "d356064effe993211e6993559fcfbe94c2aff5d7c759ee17b5d8d94d3b3b0e56",
+        "snapshot_matches": true
+      }
+    ],
+    "repo_drift_during_verification": [
+      "dm/gfx/nvn/nvn_tf_diag.h",
+      "dm/gfx/nvn/nvn_mtl.m"
+    ],
+    "repo_drift_note": "repo worktree changed at 10:49 while verifying; identity is the snapshot, not the repo"
+  },
+  "environment": {
+    "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "cc": "3.13.7",
+    "note": "CPU only; no GPU/Metal/device/guest/gate/hostbuild/resource sampling"
+  },
+  "contracts": [
+    {
+      "id": "C01",
+      "status": "PASS",
+      "summary": "payload 32B/header 8/total 40, offsets/alignment, OP_TF_DIAG=42/OP_COUNT_=43, enum prefix identical to baseline, 7 typed adapters match nvn_protos.h, no slot registration, no producer, NVN stubs preserved",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/static_checks.json",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log"
+      ],
+      "findings": []
+    },
+    {
+      "id": "C02",
+      "status": "PASS",
+      "summary": "off/invalid: no alloc, no command bytes, legacy sequence byte-identical to pre-A1 (identical rec() body); consumer touches no state/depth/counters and reads no payload (PROT_NONE proven)",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/identity.json"
+      ],
+      "findings": []
+    },
+    {
+      "id": "C03",
+      "status": "PASS",
+      "summary": "size 40 + 8B alignment gate the single 32B copy/apply; bad size/alignment -> BAD_RECORD without payload read; flags/kind/index/count/overflow fail closed; counters saturate",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/probe_oob.log"
+      ],
+      "findings": [
+        "F3"
+      ]
+    },
+    {
+      "id": "C04",
+      "status": "PASS",
+      "summary": "initial unknown; Bind never creates active; Begin/End/Pause/Resume observed-intent model; repeated Begin and unmatched End stay ungated unknown; complete Begin->End model-inactive",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log"
+      ],
+      "findings": [
+        "F2"
+      ]
+    },
+    {
+      "id": "C05",
+      "status": "PASS",
+      "summary": "seq saturates at UINT64_MAX, sticky unknown, later Bind/Begin/End cannot recover, gate refuses; diagnostic counters saturate",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/logs/mutants.json"
+      ],
+      "findings": [
+        "F4"
+      ]
+    },
+    {
+      "id": "C06",
+      "status": "PASS",
+      "summary": "top-level reinit unknown (no residual known), nested CALL inherits, OP_BEGIN does not reset, same [End] sub-list exits differently from active/unknown/inactive",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log"
+      ],
+      "findings": [
+        "F1"
+      ]
+    },
+    {
+      "id": "C07",
+      "status": "PASS",
+      "summary": "single OP_TF_DIAG arm, one consume per record, no fallthrough, g_rc_skip suppresses DRAW/DRAW_IDX while TF still applies; no production snapshot hook exists",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/static_checks.json"
+      ],
+      "findings": []
+    },
+    {
+      "id": "C08",
+      "status": "SKIP",
+      "summary": "15 scanner/hoist/defer/frzbarrier sites not audited line-by-line (4 sampled, none reference TF); slot install, startup mode, observer/real TF output are not wired; cannot support real host; route stays NO-GO",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/static_checks.json"
+      ],
+      "findings": [
+        "F1"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "title": "mode switched off between enter and leave leaks g_tf_diag_depth, next submission reuses a stale known state",
+      "anchor": "dm/gfx/nvn/nvn_mtl.m:7706-7711 (tf_diag_enter/leave), :7729-7731 (mtl_exec enter)",
+      "reproducer": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/build/probes depth-leak",
+      "expected": "depth 0 after off-mode leave; next top-level submission re-initialises to unknown",
+      "actual": "depth 1; second submission leaves state inactive (gate would allow)",
+      "today_reachable": false,
+      "reachability_note": "dm_tf_diag_set_mode is defined but never called (A1 fixes mode OFF); becomes real if A2b wires a runtime toggle",
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/probe_depth_leak.log"
+    },
+    {
+      "id": "F2",
+      "severity": "info",
+      "title": "TF_DIAG_REASON_BAD_KIND is unreachable: kind>7 is rejected as BAD_PAYLOAD before the switch",
+      "anchor": "dm/gfx/nvn/nvn_tf_diag.h tf_diag_payload_ok / tf_diag_apply default arm",
+      "reproducer": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/build/probes bad-kind",
+      "expected": "BAD_KIND for kind=8",
+      "actual": "BAD_PAYLOAD (active unknown, still fail-closed)",
+      "today_reachable": true,
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/probe_bad_kind.log"
+    },
+    {
+      "id": "F3",
+      "severity": "info",
+      "title": "record size check is not a stream/memory boundary check; a header claiming 40 with a short payload makes the 32B copy read past it",
+      "anchor": "dm/gfx/nvn/nvn_mtl.m:7712-7723 (tf_diag_case)",
+      "reproducer": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/build/probes_asan oob",
+      "expected": "ASan heap-buffer-overflow READ of size 32",
+      "actual": "heap-buffer-overflow reported at tf_diag_case",
+      "today_reachable": true,
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/probe_oob.log"
+    },
+    {
+      "id": "F4",
+      "severity": "info",
+      "title": "sticky-saturation guard is duplicated (apply head + tick tail); deleting the apply guard alone is an equivalent mutant",
+      "anchor": "dm/gfx/nvn/nvn_tf_diag.h tf_diag_apply / tf_diag_tick",
+      "reproducer": "mutants/m1_sticky_saturation_removed (original, not counted)",
+      "expected": "deleting a guard should be caught",
+      "actual": "still pass: tick re-applies sticky before returning",
+      "today_reachable": true,
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/logs/mutants.json"
+    }
+  ],
+  "runs": {
+    "plain": {
+      "command": "build/tfv_tests",
+      "exit": 0,
+      "pass": 54,
+      "fail": 0,
+      "log": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_plain.log"
+    },
+    "asan_ubsan": {
+      "command": "build/tfv_tests_asan",
+      "exit": 0,
+      "pass": 54,
+      "fail": 0,
+      "log": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/run_asan.log"
+    },
+    "static_checks": {
+      "command": "python3 src/static_checks.py",
+      "pass": 19,
+      "fail": 0,
+      "log": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/static_checks.json"
+    },
+    "mutations": {
+      "command": "python3 src/mutate.py",
+      "caught": "6/6",
+      "all_compile_rc_0": true,
+      "log": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/evidence/mutants.json"
+    },
+    "probes": {
+      "depth-leak": "finding reproduced (exit 0)",
+      "bad-kind": "finding reproduced (exit 0)",
+      "oob": "ASan heap-buffer-overflow (exit 134)"
+    }
+  },
+  "harness_disclosure": {
+    "extracted_verbatim": [
+      "nvn_tf_diag.h",
+      "nvn_obj.h 95-104",
+      "hle_nvn.c 779-796",
+      "nvn_mtl.m 7695-7728"
+    ],
+    "written_by_verifier": [
+      "independent expected values and assertions",
+      "mtl_exec SUBSET executor for C06/C07",
+      "mock command-buffer recorder"
+    ],
+    "not_full_mtl_exec": true,
+    "not_a_gpu_or_metal_test": true
+  },
+  "freeze": {
+    "state": "frozen awaiting review",
+    "no_commit_or_push": true,
+    "repo_and_candidate_untouched": true
+  }
+}

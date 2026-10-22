@@ -1,0 +1,28 @@
+{
+  "decision": "accepted-limited-cpu-observation-plan-checkpoint",
+  "manifest_sha256": "0504466fd304a6e6df31be28bf66ea710e8136696926fdfa9ab621c2135dbf3b",
+  "validator_hashes": {
+    "report.md": "29234f5490311da0ad1b9a2a9d782aa27b9cb417aafa91dd6a9ec56919f28a1f",
+    "result.json": "ebd795e7bc4cfc1ff1c97ce4fdaec137268ae35a1f77974d05acbd1d6910dafa",
+    "evidence/sha256sums.txt": "df19fad3a1eb6b7276b667b076e506d430cd1925a517e2714633ce06f24d0ba2"
+  },
+  "closed_in_limited_scope": [
+    "V006.F1",
+    "V006.F2",
+    "V006.F3",
+    "V006.F4",
+    "V006.F6"
+  ],
+  "path_constraint": "V006.F5 accepted for executed root/realpath cases; cross-device branch static-only SKIP",
+  "not_proven": [
+    "real host capture",
+    "complete 180s gate",
+    "real exemption dump content",
+    "PROF/big/full renderer",
+    "V001.F3 actual command memory bounds",
+    "cross-device rejection execution"
+  ],
+  "next_checkpoint": "eligible for owner authorization of a single dedicated diagnostic observation; not authorized by this decision",
+  "route": "NO-GO",
+  "launch_authorized": false
+}

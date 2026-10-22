@@ -1,0 +1,11 @@
+[extend]
+useDefault = true
+
+# The renderer uses 16-hex content-derived shader identifiers named "key".
+# This narrowly scoped exception does not suppress other secret rules or longer credentials.
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "NVN shader identity, not an authentication credential"
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{16}(?:_b|_bf)?$''']

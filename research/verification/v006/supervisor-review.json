@@ -1,0 +1,20 @@
+{
+  "decision": "changes-required",
+  "candidate": "v006",
+  "manifest_sha256": "112f832d774f246391b1d25e5b7eea588eff95184ae8234fb727ec0501750720",
+  "verified_validator_hashes": {
+    "report.md": "b8d091168a3cf085f3397f7a9dda5e329251c0082849c670db9cba86541d19a5",
+    "result.json": "fd62445ec77217372f831419a22c7e50cf990bfbe68738a45fba5d2c3555c653",
+    "evidence/sha256sums.txt": "e625403ed7d9b22e48750fcc5248f1c3bba87e30235e233ee69a91876e9e1afb"
+  },
+  "required_fixes": [
+    "F1 result header keys and cleanup must survive evidence exceptions",
+    "F2 production KD child lines ignored, real header duplicates rejected",
+    "F3 bare normal shader tokens",
+    "F4 depth i32 bound and numeric domain audit",
+    "F5 allowed volume root symlink/device enforcement"
+  ],
+  "supplemental": "exact MLOG prefixed tf-intent path to be verified separately",
+  "route": "NO-GO",
+  "host_unchanged": true
+}

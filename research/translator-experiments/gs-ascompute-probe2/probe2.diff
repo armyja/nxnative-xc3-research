@@ -1,0 +1,159 @@
+--- /path/to/external-drive/xc3/work/experiments/gs-ascompute-probe/src/Program.cs	2026-10-22 04:33:06
++++ /path/to/external-drive/xc3/work/experiments/gs-ascompute-probe2/src/Program.cs	2026-10-22 04:36:44
+@@ -24,18 +24,31 @@
+ {
+     const int TexBase = 0x20, SampBase = 0x568;   // byte base of NVN texture handles in c[2] (8 bytes per slot): 0x20 for this game (NVN 55), measured over the whole library, see TEX_BASE in dm/gfx/tools/dmsh_build.py; separate samplers keep D2R's 0x568 (unused by this game)
+ 
++    sealed class Alloc
++    {
++        // AsCompute reserves set0 bindings 0 (support) and 1 (vb_info). Dynamic resources are all set0, so the
++        // allocator starts at 2. Reserved set1/set2 resources are not allocated here and may legally reuse binding numbers.
++        int _next;
++        public Alloc(int start) { _next = start; }
++        public int Next(int count, string what)
++        {
++            if (count <= 0) throw new InvalidOperationException("invalid "+what+" count "+count);
++            int b = _next; _next += count; return b;
++        }
++        public int[] SelfTest() { throw new NotImplementedException(); }
++    }
+     sealed class Accessor : IGpuAccessor
+     {
+-        readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new();
++        readonly byte[] _code; readonly JsonObject _job; readonly Alloc _alloc = new Alloc(2); public readonly List<string> Notes = new();
+         readonly byte[] _c1;
+         public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); }
+         // c1 constant segment (the 0x100 bytes before the control segment in the shader package): the jump table of indirect jump BRX lives here (LDC c[1]); without it the translator cannot resolve jump targets and control flow goes wrong (particle shaders loop forever)
+         public uint ConstantBuffer1Read(int offset) { if (offset >= 0 && offset + 4 <= _c1.Length) return BitConverter.ToUInt32(_c1, offset); Notes.Add($"c1 read out of bounds +{offset:X} (c1 length {_c1.Length})"); return 0; }
+         // All resources go into set 0, each with a distinct binding number (spirv-cross emits them as one argument buffer); the translator's convention of giving the buffer of constant segment number index binding = index+1 is not relied on
+-        public SetBindingPair CreateConstantBufferBinding(int index) => new(0, _binding++);
+-        public SetBindingPair CreateImageBinding(int count, bool isBuffer) { int b = _binding; _binding += count; return new(0, b); }
+-        public SetBindingPair CreateStorageBufferBinding(int index) => new(0, _binding++);
+-        public SetBindingPair CreateTextureBinding(int count, bool isBuffer) { int b = _binding; _binding += count; return new(0, b); }
++        public SetBindingPair CreateConstantBufferBinding(int index) => new(0, _alloc.Next(1, "cb"));
++        public SetBindingPair CreateImageBinding(int count, bool isBuffer) => new(0, _alloc.Next(count, "image"));
++        public SetBindingPair CreateStorageBufferBinding(int index) => new(0, _alloc.Next(1, "sb"));
++        public SetBindingPair CreateTextureBinding(int count, bool isBuffer) => new(0, _alloc.Next(count, "tex"));
+         public ReadOnlySpan<ulong> GetCode(ulong address, int minimumSize) => MemoryMarshal.Cast<byte, ulong>(new ReadOnlySpan<byte>(_code)[(int)address..]);
+         public int QuerySamplerArrayLengthFromPool() => 32;
+         public int QueryTextureArrayLengthFromBuffer(int slot) => 32;
+@@ -107,74 +120,58 @@
+ 
+     static int Main(string[] args)
+     {
++        if (args.Length == 1 && args[0] == "--self-test") {
++            var a=new Alloc(2); var got=new List<int>();
++            got.Add(a.Next(1,"cb")); got.Add(a.Next(1,"sb")); got.Add(a.Next(3,"tex")); got.Add(a.Next(2,"image"));
++            if (string.Join(",",got)!="2,3,4,7" ) throw new Exception("alloc order "+string.Join(",",got));
++            if (a.Next(1,"cb")!=9) throw new Exception("alloc next");
++            bool bad=false; try { a.Next(0,"tex"); } catch { bad=true; } if(!bad) throw new Exception("bad count accepted");
++            Console.WriteLine("alloc_self_test: ok"); return 0;
++        }
+         if (args.Length < 3) { Console.Error.WriteLine("usage: probe <vs_code> <gs_code> <out_dir> [c1_hex]"); return 2; }
+-        string vsPath=args[0], gsPath=args[1], outDir=args[2];
+-        string c1=args.Length>3?args[3]:"";
++        string vsPath=args[0], gsPath=args[1], outDir=args[2]; string c1=args.Length>3?args[3]:"";
+         Directory.CreateDirectory(outDir);
+-        JsonObject Job(string key,string stage,string code)
+-        {
+-            var j=new JsonObject();
+-            j["key"]=key; j["stage"]=stage; j["code"]=code; j["c1"]=c1;
+-            j["tex"]=new JsonObject(); j["img"]=new JsonObject(); j["attr"]=new JsonObject(); j["fout"]=new JsonObject();
+-            j["debug"]=true; j["reduced"]=true;
+-            File.WriteAllText(Path.Combine(outDir,key+".job.json"), j.ToJsonString(new JsonSerializerOptions { WriteIndented=true }));
+-            return j;
++        JsonObject Job(string key,string stage,string code) {
++            var j=new JsonObject(); j["key"]=key; j["stage"]=stage; j["code"]=code; j["c1"]=c1;
++            j["tex"]=new JsonObject(); j["img"]=new JsonObject(); j["attr"]=new JsonObject(); j["fout"]=new JsonObject(); j["debug"]=true; j["reduced"]=true;
++            File.WriteAllText(Path.Combine(outDir,key+".job.json"), j.ToJsonString(new JsonSerializerOptions { WriteIndented=true })); return j;
+         }
+-        try
+-        {
++        try {
+             byte[] vsCode=File.ReadAllBytes(vsPath), gsCode=File.ReadAllBytes(gsPath);
+-            var vsJob=Job("d1657e5077b26d1d","vs",vsPath);
+-            var gsJob=Job("95bfab6122539993","gs",gsPath);
+-            var vsAcc=new Accessor(vsCode,vsJob);
+-            var gsAcc=new Accessor(gsCode,gsJob);
+-            var flags=TranslationFlags.DebugMode;   // do not set TranslationFlags.Compute; no CS masquerade
++            var vsAcc=new Accessor(vsCode,Job("d1657e5077b26d1d","vs",vsPath));
++            var gsAcc=new Accessor(gsCode,Job("95bfab6122539993","gs",gsPath));
++            var flags=TranslationFlags.DebugMode;
+             var vsCtx=Translator.CreateContext(0,vsAcc,new TranslationOptions(TargetLanguage.Spirv,TargetApi.Vulkan,flags));
+             var gsCtx=Translator.CreateContext(0,gsAcc,new TranslationOptions(TargetLanguage.Spirv,TargetApi.Vulkan,flags));
+-            // VS context is only decoded; no VS Translate. The map must be set before the GS Translate(true).
++            ShaderProgram vs=vsCtx.Translate(asCompute:true);
++            // Map is taken after the VS Translate(true); it reads the decoded VS program's IO usage, not a second translate.
+             gsCtx.SetVertexOutputMapForGeometryAsCompute(vsCtx);
+-            var reservations=gsCtx.GetResourceReservations();
+-            ShaderProgram p=gsCtx.Translate(asCompute:true);
+-            File.WriteAllBytes(Path.Combine(outDir,"gs_ascompute.spv"),p.BinaryCode);
++            ShaderProgram gs=gsCtx.Translate(asCompute:true);
++            File.WriteAllBytes(Path.Combine(outDir,"vs_ascompute.spv"),vs.BinaryCode);
++            File.WriteAllBytes(Path.Combine(outDir,"gs_ascompute.spv"),gs.BinaryCode);
++            var vr=vsCtx.GetResourceReservations(); var gr=gsCtx.GetResourceReservations();
+             var meta=new JsonObject();
+-            meta["vs_key"]="d1657e5077b26d1d"; meta["gs_key"]="95bfab6122539993"; meta["stage"]="gs"; meta["as_compute"]=true;
+-            meta["vs_translated"]=false; meta["translate_calls"]=1;
+-            meta["input_topology_assumption"]="Points (experimental accessor)";
+-            meta["reservations"]=new JsonObject
+-            {
+-                ["vertex_info_cb_binding"]=reservations.VertexInfoConstantBufferBinding,
+-                ["vertex_output_sb_binding"]=reservations.VertexOutputStorageBufferBinding,
+-                ["geometry_vertex_output_sb_binding"]=reservations.GeometryVertexOutputStorageBufferBinding,
+-                ["geometry_index_output_sb_binding"]=reservations.GeometryIndexOutputStorageBufferBinding,
+-                ["index_buffer_texture_binding"]=reservations.IndexBufferTextureBinding,
+-                ["topology_remap_texture_binding"]=reservations.TopologyRemapBufferTextureBinding,
+-                ["reserved_cb"]=reservations.ReservedConstantBuffers,
+-                ["reserved_sb"]=reservations.ReservedStorageBuffers,
+-                ["reserved_tex"]=reservations.ReservedTextures,
+-                ["reserved_img"]=reservations.ReservedImages,
+-                ["input_words_per_invocation"]=reservations.InputSizePerInvocation,
+-                ["output_words_per_invocation"]=reservations.OutputSizePerInvocation,
+-                ["output_bytes_per_invocation"]=reservations.OutputSizeInBytesPerInvocation
+-            };
+-            var info=new JsonObject();
+-            info["cbufs"]=new JsonArray(); info["sbufs"]=new JsonArray(); info["textures"]=new JsonArray(); info["images"]=new JsonArray();
+-            foreach(var b in p.Info.CBuffers) info["cbufs"].AsArray().Add(new JsonObject{["binding"]=b.Binding,["slot"]=b.Slot});
+-            foreach(var b in p.Info.SBuffers) info["sbufs"].AsArray().Add(new JsonObject{["binding"]=b.Binding,["slot"]=b.Slot,["cb_slot"]=b.SbCbSlot,["cb_offset"]=b.SbCbOffset,["flags"]=(int)b.Flags});
+-            foreach(var t in p.Info.Textures) info["textures"].AsArray().Add(new JsonObject{["binding"]=t.Binding,["type"]=(int)t.Type,["format"]=t.Format.ToString(),["cbuf_slot"]=t.CbufSlot,["handle"]=t.HandleIndex,["array"]=t.ArrayLength,["separate"]=t.Separate,["flags"]=(int)t.Flags});
+-            foreach(var t in p.Info.Images) info["images"].AsArray().Add(new JsonObject{["binding"]=t.Binding,["type"]=(int)t.Type,["format"]=t.Format.ToString(),["cbuf_slot"]=t.CbufSlot,["handle"]=t.HandleIndex,["array"]=t.ArrayLength,["separate"]=t.Separate,["flags"]=(int)t.Flags});
+-            meta["info"]=info;
+-            meta["binary_size"]=p.BinaryCode.Length;
+-            meta["binary_sha256"]=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(p.BinaryCode)).ToLowerInvariant();
+-            meta["uses_float64"]=UsesFloat64(p.BinaryCode);
+-            meta["notes"]=new JsonArray(vsAcc.Notes.Concat(gsAcc.Notes).Select(x=>(JsonNode)x).ToArray());
+-            File.WriteAllText(Path.Combine(outDir,"probe.json"),meta.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
+-            Console.WriteLine(meta.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
+-            return 0;
+-        }
+-        catch(Exception e)
+-        {
+-            File.WriteAllText(Path.Combine(outDir,"error.txt"),e.ToString());
+-            Console.Error.WriteLine(e.ToString());
+-            return 1;
+-        }
++            meta["vs_key"]="d1657e5077b26d1d"; meta["gs_key"]="95bfab6122539993";
++            meta["vs_translated"]=true; meta["gs_translated"]=true; meta["translate_calls"]=2; meta["combined_translate"]=false;
++            meta["map_taken"]="after VS Translate(true), before GS Translate(true)";
++            meta["vs_binary_size"]=vs.BinaryCode.Length; meta["vs_binary_sha256"]=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(vs.BinaryCode)).ToLowerInvariant();
++            meta["gs_binary_size"]=gs.BinaryCode.Length; meta["gs_binary_sha256"]=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(gs.BinaryCode)).ToLowerInvariant();
++            meta["uses_float64"]=UsesFloat64(vs.BinaryCode)||UsesFloat64(gs.BinaryCode);
++            JsonObject R(ResourceReservations r)=>new JsonObject{
++                ["vertex_info_cb_binding"]=r.VertexInfoConstantBufferBinding,["vertex_output_sb_binding"]=r.VertexOutputStorageBufferBinding,
++                ["geometry_vertex_output_sb_binding"]=r.GeometryVertexOutputStorageBufferBinding,["geometry_index_output_sb_binding"]=r.GeometryIndexOutputStorageBufferBinding,
++                ["index_buffer_texture_binding"]=r.IndexBufferTextureBinding,["topology_remap_texture_binding"]=r.TopologyRemapBufferTextureBinding,
++                ["reserved_cb"]=r.ReservedConstantBuffers,["reserved_sb"]=r.ReservedStorageBuffers,["reserved_tex"]=r.ReservedTextures,["reserved_img"]=r.ReservedImages,
++                ["input_words_per_invocation"]=r.InputSizePerInvocation,["output_words_per_invocation"]=r.OutputSizePerInvocation,["output_bytes_per_invocation"]=r.OutputSizeInBytesPerInvocation };
++            meta["vs_reservations"]=R(vr); meta["gs_reservations"]=R(gr);
++            JsonObject I(ShaderProgram p){ var o=new JsonObject(); o["cbufs"]=new JsonArray(); o["sbufs"]=new JsonArray(); o["textures"]=new JsonArray(); o["images"]=new JsonArray();
++                foreach(var b in p.Info.CBuffers) o["cbufs"].AsArray().Add(new JsonObject{["binding"]=b.Binding,["slot"]=b.Slot});
++                foreach(var b in p.Info.SBuffers) o["sbufs"].AsArray().Add(new JsonObject{["binding"]=b.Binding,["slot"]=b.Slot,["cb_slot"]=b.SbCbSlot,["cb_offset"]=b.SbCbOffset,["flags"]=(int)b.Flags});
++                foreach(var t in p.Info.Textures) o["textures"].AsArray().Add(new JsonObject{["binding"]=t.Binding,["type"]=(int)t.Type,["format"]=t.Format.ToString(),["cbuf_slot"]=t.CbufSlot,["handle"]=t.HandleIndex,["array"]=t.ArrayLength,["separate"]=t.Separate,["flags"]=(int)t.Flags});
++                foreach(var t in p.Info.Images) o["images"].AsArray().Add(new JsonObject{["binding"]=t.Binding,["type"]=(int)t.Type,["format"]=t.Format.ToString(),["cbuf_slot"]=t.CbufSlot,["handle"]=t.HandleIndex,["array"]=t.ArrayLength,["separate"]=t.Separate,["flags"]=(int)t.Flags}); return o; }
++            meta["vs_info"]=I(vs); meta["gs_info"]=I(gs); meta["notes"]=new JsonArray(vsAcc.Notes.Concat(gsAcc.Notes).Select(x=>(JsonNode)x).ToArray());
++            File.WriteAllText(Path.Combine(outDir,"probe2.json"),meta.ToJsonString(new JsonSerializerOptions{WriteIndented=true}));
++            Console.WriteLine(meta.ToJsonString(new JsonSerializerOptions{WriteIndented=true})); return 0;
++        } catch(Exception e) { File.WriteAllText(Path.Combine(outDir,"error.txt"),e.ToString()); Console.Error.WriteLine(e.ToString()); return 1; }
+     }
+ }

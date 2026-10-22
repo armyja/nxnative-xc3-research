@@ -1,0 +1,54 @@
+{
+  "candidate_id": "tf-diag-a1-a2a-v001",
+  "repo": "/path/to/user/projects/nxnative-xc3",
+  "branch": "xc3",
+  "head": "14082571ea0a1ea515be64b963e4f4d7c39a3097",
+  "dirty_candidate": true,
+  "files": [
+    {
+      "path": "dm/gfx/nvn/nvn_tf_diag.h",
+      "sha256": "016cced44cf564d07331c7d4d8f0b9454d4fd44ecf8794f5bc9363a12e8212ee",
+      "size": 11621
+    },
+    {
+      "path": "dm/gfx/nvn/nvn_obj.h",
+      "sha256": "8e9f93e2742d0e634c2451c1f6c8583bc262c253c56679c3b87cb1c8efb3221f",
+      "size": 19646
+    },
+    {
+      "path": "dm/gfx/nvn/hle_nvn.c",
+      "sha256": "36863fc4cc56cba3fe969766c094a204e5640abe7d81b7b77ffba09a5b29258b",
+      "size": 176743
+    },
+    {
+      "path": "dm/gfx/nvn/nvn_mtl.m",
+      "sha256": "bc0a209565b17823884df3501f659e91ddd99f5a3dab7b78541f3997e0749d25",
+      "size": 826280
+    },
+    {
+      "path": "dm/gfx/nvn/nvn_kd_res.h",
+      "sha256": "9956f931b3a25eb10c82a08fb926a0b5dd27789b315b55860e33ba26aaab4642",
+      "size": 9121
+    },
+    {
+      "path": "dm/gfx/nvn/nvn_protos.h",
+      "sha256": "a3750327d0ccbc535d3b4d30c326a84bdc972be33bca43cdf3b78a0b6737968d",
+      "size": 46165
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "d356064effe993211e6993559fcfbe94c2aff5d7c759ee17b5d8d94d3b3b0e56",
+      "size": 5756
+    }
+  ],
+  "status": "candidate-not-independently-validated",
+  "restrictions": [
+    "CPU-only",
+    "no-production-writes",
+    "no-host-build",
+    "no-device-or-GPU",
+    "no-guest-or-gate",
+    "no-real-resource-sampling",
+    "no-commit-or-push"
+  ]
+}

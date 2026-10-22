@@ -25,3 +25,27 @@ save/
 shots/
 tmp/
 *.log
+
+# Archive policy: never add game payloads, credentials or local runtime outputs.
+*.nso
+*.bin
+*.spv
+*.air
+*.metallib
+*.pdb
+*.ipa
+*.xcz
+*.nsz
+*.pem
+*.p12
+*.pfx
+*.mobileprovision
+.env
+.env.*
+ExeFS/
+exefs/
+shdump/
+patched_v3/
+private-local/
+*.raw
+*.pid

@@ -1,0 +1,167 @@
+{
+  "id": "tf-intent-plan-v006",
+  "kind": "isolated-host-and-observation-plan",
+  "parent_v005_manifest_sha256": "c320d468a23afd5b65f2efd32e77dd266c3f0ad5baac8112ae17e371e874334f",
+  "files": [
+    {
+      "path": "candidate/plan/base_parser.sha",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/base_parser.sha",
+      "sha256": "0da8c2f7147c5a582b36a0d384ed5c73b6b755544d3172fb3266bdaeb78e13a1",
+      "size": 87
+    },
+    {
+      "path": "candidate/plan/exempt.json",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/exempt.json",
+      "sha256": "844029072907f30d833f3ba05764f701ef9c10e0484e806e6d7731d62a7500c3",
+      "size": 421
+    },
+    {
+      "path": "candidate/plan/gsres_parser_base.py",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/gsres_parser_base.py",
+      "sha256": "cc7745e78a4024be74cf66889f8c03ec5891223ac09b031f80254ce46b3b6f73",
+      "size": 21936
+    },
+    {
+      "path": "candidate/plan/identity.json",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/identity.json",
+      "sha256": "3de49b987a4896597784cd16a8366ba5610150565c4dc7ba40557921f6520599",
+      "size": 4052
+    },
+    {
+      "path": "candidate/plan/launcher.py",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/launcher.py",
+      "sha256": "e41276cd30b5b0d7d76dab9266dc9471946b5c53d0e02880e3df5e55ba23ca42",
+      "size": 3452
+    },
+    {
+      "path": "candidate/plan/preflight.log",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/preflight.log",
+      "sha256": "8d1bba67dbf5dee7b32f5f32d4364eff527d0957cc50102ef59285365ff456c8",
+      "size": 700
+    },
+    {
+      "path": "candidate/plan/preflight.py",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/preflight.py",
+      "sha256": "f222e63fe2ff2b8b46ad413787d461b5431c50f420d34481f31f694abe186ba1",
+      "size": 5706
+    },
+    {
+      "path": "candidate/plan/supervise_tfintent.py",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/supervise_tfintent.py",
+      "sha256": "2d0e7f64a3e7f2e977135760f23b3b9a7bacbf4580f17e084b101533383759da",
+      "size": 18267
+    },
+    {
+      "path": "candidate/plan/tests/fixtures/kd_gsres_hit.txt",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/tests/fixtures/kd_gsres_hit.txt",
+      "sha256": "db63f611d05778e3093ddc705bbdfd028484956ff1d108bb30a652713355bd6b",
+      "size": 1173
+    },
+    {
+      "path": "candidate/plan/tests/test_tf_next.log",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/tests/test_tf_next.log",
+      "sha256": "5bbece3bf8adcc0064c051ecefd651e4ffbe193baf30bfc633335fa7d155c9a5",
+      "size": 9
+    },
+    {
+      "path": "candidate/plan/tests/test_tf_next.py",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/tests/test_tf_next.py",
+      "sha256": "4ae839a80507fc5f3b6f7ca65a6ece19e76d58931736a0c04177c0601171e93a",
+      "size": 4731
+    },
+    {
+      "path": "candidate/plan/tfintent.infra.sha",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/tfintent.infra.sha",
+      "sha256": "e7288f1a29c6126e3a02e6c40c616a327ab49b4e84573f1c3a2266e340f359ec",
+      "size": 410
+    },
+    {
+      "path": "candidate/plan/tfintent_parser.py",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-observe-plan/tfintent_parser.py",
+      "sha256": "fc48655bda6919f36e804f1b918b11e25ac3344c1e47bb06d5c8c3aa38bfcae5",
+      "size": 5680
+    },
+    {
+      "path": "candidate/host/build.env",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/build.env",
+      "sha256": "3bea347f8bcb410c4156c4fe156d88352685b048f5535a96062c31034a66dc9d",
+      "size": 400
+    },
+    {
+      "path": "candidate/host/build.log",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/build.log",
+      "sha256": "5602c223967b12607b7c169dbe6acd3b95074af32a0afa6d0d105a8694084253",
+      "size": 82781
+    },
+    {
+      "path": "candidate/host/build.sh",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/build.sh",
+      "sha256": "40fbe993dceb8459bc5596aa042964957bc58d31904ca4bf587962318ff78666",
+      "size": 2449
+    },
+    {
+      "path": "candidate/host/dmhost-tfintent",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/dmhost-tfintent",
+      "sha256": "931a241f60e2bd1d3f7c672c817b163972e6ecccfd7128607053698f6a3d12b3",
+      "size": 1941408
+    },
+    {
+      "path": "candidate/host/dmhost-tfintent.dSYM/Contents/Info.plist",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/dmhost-tfintent.dSYM/Contents/Info.plist",
+      "sha256": "e4f8d2a3be591769d59e5903c93d5a0d3694c5750101ae0c72ef7fc36e79fe91",
+      "size": 644
+    },
+    {
+      "path": "candidate/host/dmhost-tfintent.dSYM/Contents/Resources/DWARF/dmhost-tfintent",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/dmhost-tfintent.dSYM/Contents/Resources/DWARF/dmhost-tfintent",
+      "sha256": "60b927742105945c26d3a5fa822d976a763ab78a40b454e324f56788b0c88c20",
+      "size": 3592552
+    },
+    {
+      "path": "candidate/host/dmhost-tfintent.dSYM/Contents/Resources/Relocations/aarch64/dmhost-tfintent.yml",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/dmhost-tfintent.dSYM/Contents/Resources/Relocations/aarch64/dmhost-tfintent.yml",
+      "sha256": "babda6c0a9dcc511ea9673bd40e15df8f8d918278ec69f9a80446cb3d01517f0",
+      "size": 155
+    },
+    {
+      "path": "candidate/host/dmhost-tfintent.sha256",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/dmhost-tfintent.sha256",
+      "sha256": "fb12f747878cbd9e9b559a38694be33be7453e3c234fb3f032bafcfb696fae15",
+      "size": 136
+    },
+    {
+      "path": "candidate/host/inputs.sha",
+      "source_path": "/path/to/external-drive/xc3/work/experiments/tf-intent-host/inputs.sha",
+      "sha256": "04860f09c0be0f702d041217c882f890675749489160b17feb302f1ca7002511",
+      "size": 622
+    }
+  ],
+  "source_checks": [
+    {
+      "path": "/path/to/user/projects/nxnative-xc3/dm/gfx/nvn/nvn_tf_diag.h",
+      "sha256": "b27fb321eb78f3aee678c3a72cf9de3cc7ba37744350a2682b02ef08688008ba",
+      "equals_v005": true
+    },
+    {
+      "path": "/path/to/user/projects/nxnative-xc3/dm/gfx/nvn/nvn_obj.h",
+      "sha256": "8e9f93e2742d0e634c2451c1f6c8583bc262c253c56679c3b87cb1c8efb3221f",
+      "equals_v005": true
+    },
+    {
+      "path": "/path/to/user/projects/nxnative-xc3/dm/gfx/nvn/hle_nvn.c",
+      "sha256": "029efe768623a7753be3bfd9bd365a9ca2cff62821343e3f8a002ba3bdedfcdb",
+      "equals_v005": true
+    },
+    {
+      "path": "/path/to/user/projects/nxnative-xc3/dm/gfx/nvn/nvn_mtl.m",
+      "sha256": "ee708ad5143889302ae91e38a73f4bb1e73e07e7282d1f11ba1abd44b24f3105",
+      "equals_v005": true
+    }
+  ],
+  "route": "NO-GO",
+  "host_execution_authorized": false,
+  "notes": [
+    "Absolute paths inside identity/launcher are production bindings; validators must disclose any test-only adapter or relocation.",
+    "No candidate verdict; independent verification pending."
+  ]
+}

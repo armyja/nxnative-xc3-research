@@ -16,6 +16,7 @@
 #include "nvn_pace.h"
 #include "../../host/front.h"
 #include "nvn_dirty.h"
+#include "nvn_tf_diag.h"
 #include <mach/mach_time.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -67,6 +68,56 @@ typedef struct { const char *name; void *fn; } nvn_impl;
     __attribute__((used, section("__DATA,swnvn"))) static const nvn_impl e_##name = {#name, (void *)h_##name}; \
     static ret h_##name(__VA_ARGS__)
 
+// ---------- TF diagnostic: startup-fixed mode and conditional slot install (A2c) ----------
+// The mode is parsed exactly once, from the normal nvn_init_slots path, and is immutable afterwards: there is no runtime
+// toggle and no production-callable setter. Before that first parse the getter reports OFF. The seven typed recording
+// adapters below are installed over the untouched red-reporting stubs only when the mode is ON; the install is
+// all-or-none and never touches g_nsem, so the "implemented API" count does not change. This records diagnostic intent
+// only: transform feedback itself is still not implemented, and no GPU work is added.
+static int g_tf_diag_mode = TF_DIAG_MODE_OFF;
+static int g_tf_diag_mode_fixed;
+int dm_tf_diag_get_mode(void) { return g_tf_diag_mode_fixed ? g_tf_diag_mode : TF_DIAG_MODE_OFF; }
+void dm_tf_diag_bind(NVNcommandBuffer *c, int index, NVNbufferAddress addr, size_t size);
+void dm_tf_diag_bind_plural(NVNcommandBuffer *c, int first, int n, const NVNbufferRange *r);
+void dm_tf_diag_begin(NVNcommandBuffer *c, NVNbufferAddress addr);
+void dm_tf_diag_end(NVNcommandBuffer *c, NVNbufferAddress addr);
+void dm_tf_diag_pause(NVNcommandBuffer *c, NVNbufferAddress addr);
+void dm_tf_diag_resume(NVNcommandBuffer *c, NVNbufferAddress addr);
+void dm_tf_diag_draw(NVNcommandBuffer *c, NVNdrawPrimitive prim, NVNbufferAddress addr);
+static int tf_diag_install_adapters(void) {
+    typedef struct { const char *name; void *fn; } tf_adapter;
+    static const tf_adapter a[7] = {
+        {"nvnCommandBufferBindTransformFeedbackBuffer", (void *)dm_tf_diag_bind},
+        {"nvnCommandBufferBindTransformFeedbackBuffers", (void *)dm_tf_diag_bind_plural},
+        {"nvnCommandBufferBeginTransformFeedback", (void *)dm_tf_diag_begin},
+        {"nvnCommandBufferEndTransformFeedback", (void *)dm_tf_diag_end},
+        {"nvnCommandBufferPauseTransformFeedback", (void *)dm_tf_diag_pause},
+        {"nvnCommandBufferResumeTransformFeedback", (void *)dm_tf_diag_resume},
+        {"nvnCommandBufferDrawTransformFeedback", (void *)dm_tf_diag_draw},
+    };
+    unsigned idx[7];
+    for (unsigned k = 0; k < 7; k++) {   // resolve and validate every name before anything is replaced
+        unsigned i = 0;
+        while (i < NVN_NFUNC && strcmp(nvn_names[i], a[k].name)) i++;
+        if (i == NVN_NFUNC) { LOG("[tf-intent] diagnostic not installed: %s is not in the name table", a[k].name); return 0; }
+        if (nvn_slot[i].fn != (void *)nvn_unimpl_entry) { LOG("[tf-intent] diagnostic not installed: %s is not the red-reporting stub", a[k].name); return 0; }
+        idx[k] = i;
+    }
+    for (unsigned k = 0; k < 7; k++) nvn_slot[idx[k]].fn = a[k].fn;   // all-or-none install; no other slot, counter or thunk path is touched
+    LOG("[tf-intent] diagnostic recording adapters installed for 7 transform-feedback calls (diagnostic intent only; TF is not implemented)");
+    return 1;
+}
+// Publish the startup mode only after the whole install finished. The getter reports OFF while g_tf_diag_mode_fixed is 0,
+// so no consumer, barrier or observer can see ON during a failed or still-running install. The decision is taken once.
+static int tf_diag_activate(int requested) {
+    int ok = 0;
+    if (requested == TF_DIAG_MODE_ON) ok = tf_diag_install_adapters();
+    if (requested == TF_DIAG_MODE_ON && !ok) LOG("[tf-intent] diagnostic not enabled: installation failed, effective mode OFF");
+    g_tf_diag_mode = ok ? TF_DIAG_MODE_ON : TF_DIAG_MODE_OFF;
+    g_tf_diag_mode_fixed = 1;
+    return ok;
+}
+
 static int g_log;
 uint64_t nvn_new_serial(void) { static _Atomic uint64_t n; return ++n; }
 static unsigned g_nsem;                          // Number of semantic implementations (filled by nvn_init_slots)
@@ -86,6 +137,10 @@ static void nvn_init_slots(void) {
         nvn_slot[i].fn = im[k].fn; hit++;
     }
     g_nsem = hit;
+    // TF diagnostic: parse the requested mode into a local, finish the (all-or-none) install while the getter still
+    // reports OFF, then publish the effective mode once. Later environment changes have no effect; there is no retry.
+    // A2c does not touch g_nsem, nvn_real/nvn_big_real or any other slot.
+    { int tf_requested = tf_diag_parse_mode(getenv("DM_NVN_TF_DIAG")); tf_diag_activate(tf_requested); }
 }
 
 static void *nvn_lookup(const char *name) {
@@ -768,6 +823,41 @@ static void copy_view(view_t *dst, uint8_t *has, const NVNtextureView *v) { *has
 // Unity (Engage) does so when it changes scenes; only the object pointer used to be recorded, and replay read other data (a texture 1869367126 high, a Metal assertion abort).
 #define SNAP_OFF(T) ((sizeof(T) + 7) & ~(size_t)7)
 #define REC_SNAP(c, OP, T, K) ((T *)rec((c), (OP), SNAP_OFF(T) + (size_t)(K) * sizeof(tex_t)))
+
+// ---------- Transform-feedback diagnostic events (A1: recording adapters only, default off) ----------
+// One OP_TF_DIAG record per NVN transform-feedback call; the 32-byte payload and the conservative CPU model live in
+// nvn_tf_diag.h. Off or invalid mode returns before the command-buffer lookup and before any allocation, so an existing
+// command sequence records byte-identically. A2c installs them over the untouched red-reporting stubs only when the
+// startup mode is ON (see nvn_init_slots above); otherwise the slots keep the original stubs and no log is added.
+// The plural adapter never reads the caller's ranges: it records first/count only and marks the bound opaque.
+// The mode is the startup-fixed value from nvn_init_slots (see above); there is no setter and no runtime toggle.
+static void tf_diag_emit(NVNcommandBuffer *c, uint32_t kind, int32_t index, int32_t count, uint64_t addr, uint64_t size) {
+    if (dm_tf_diag_get_mode() != TF_DIAG_MODE_ON || !c) return;
+    p_tf_diag e; memset(&e, 0, sizeof e);
+    e.kind = kind; e.flags = 0; e.index = index; e.count = count; e.addr = addr; e.size = size;
+    p_tf_diag *o = (p_tf_diag *)rec(c, OP_TF_DIAG, sizeof *o);
+    *o = e;
+}
+void dm_tf_diag_bind(NVNcommandBuffer *c, int index, NVNbufferAddress addr, size_t size) { tf_diag_emit(c, TF_DIAG_KIND_BIND, index, 1, (uint64_t)addr, (uint64_t)size); }
+void dm_tf_diag_bind_plural(NVNcommandBuffer *c, int first, int n, const NVNbufferRange *r) { (void)r; tf_diag_emit(c, TF_DIAG_KIND_BIND_PLURAL_OPAQUE, first, n, 0, 0); }
+void dm_tf_diag_begin(NVNcommandBuffer *c, NVNbufferAddress addr) { tf_diag_emit(c, TF_DIAG_KIND_BEGIN, 0, 0, (uint64_t)addr, 0); }
+void dm_tf_diag_end(NVNcommandBuffer *c, NVNbufferAddress addr) { tf_diag_emit(c, TF_DIAG_KIND_END, 0, 0, (uint64_t)addr, 0); }
+void dm_tf_diag_pause(NVNcommandBuffer *c, NVNbufferAddress addr) { tf_diag_emit(c, TF_DIAG_KIND_PAUSE, 0, 0, (uint64_t)addr, 0); }
+void dm_tf_diag_resume(NVNcommandBuffer *c, NVNbufferAddress addr) { tf_diag_emit(c, TF_DIAG_KIND_RESUME, 0, 0, (uint64_t)addr, 0); }
+void dm_tf_diag_draw(NVNcommandBuffer *c, NVNdrawPrimitive prim, NVNbufferAddress addr) { tf_diag_emit(c, TF_DIAG_KIND_DRAW_OPAQUE, (int32_t)prim, 0, (uint64_t)addr, 0); }
+void dm_tf_diag_invalid(NVNcommandBuffer *c, int32_t index, int32_t count) { tf_diag_emit(c, TF_DIAG_KIND_INVALID_OPAQUE, index, count, 0, 0); }
+// Compile-time signature check against the nvn_protos.h prototypes: these adapters must keep the exact NVN signatures
+// (size_t on Bind, const NVNbufferRange* on the plural form). Nothing is registered or called by this; a mismatch fails
+// the build instead of silently recording a wrong payload.
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(_Generic(&dm_tf_diag_bind, NVNT_nvnCommandBufferBindTransformFeedbackBuffer: 1, default: 0), "dm_tf_diag_bind signature");
+_Static_assert(_Generic(&dm_tf_diag_bind_plural, NVNT_nvnCommandBufferBindTransformFeedbackBuffers: 1, default: 0), "dm_tf_diag_bind_plural signature");
+_Static_assert(_Generic(&dm_tf_diag_begin, NVNT_nvnCommandBufferBeginTransformFeedback: 1, default: 0), "dm_tf_diag_begin signature");
+_Static_assert(_Generic(&dm_tf_diag_end, NVNT_nvnCommandBufferEndTransformFeedback: 1, default: 0), "dm_tf_diag_end signature");
+_Static_assert(_Generic(&dm_tf_diag_pause, NVNT_nvnCommandBufferPauseTransformFeedback: 1, default: 0), "dm_tf_diag_pause signature");
+_Static_assert(_Generic(&dm_tf_diag_resume, NVNT_nvnCommandBufferResumeTransformFeedback: 1, default: 0), "dm_tf_diag_resume signature");
+_Static_assert(_Generic(&dm_tf_diag_draw, NVNT_nvnCommandBufferDrawTransformFeedback: 1, default: 0), "dm_tf_diag_draw signature");
+#endif
 static const tex_t *tex_snap(void *rec_, size_t off, int k, const NVNtexture *t, uint64_t ra) {
     if (!t) return NULL;
     tex_t *s = (tex_t *)((uint8_t *)rec_ + off) + k;

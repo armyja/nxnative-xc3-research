@@ -1,0 +1,228 @@
+{
+  "task": "V003",
+  "role": "independent verifier (no fixes, no commit/push/PR)",
+  "generated_at": "2026-10-22T11:09:39",
+  "candidate": {
+    "manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/candidate.json",
+    "manifest_sha256": "ee0d61375b09905b605819b9fb849dc746c0254d04502fc945df559cab0f7dd2",
+    "diff_sha256": "6feecfd20905101fca703799193c6beea76682159be458c013f8f244e329a28b",
+    "mtl_sha256": "2ba9af1a0f3821365e22a8d9ed6ad2350c89a0cd98f9464a369f7f6b844878fd",
+    "changed_vs_v002": [
+      "dm/gfx/nvn/nvn_mtl.m"
+    ],
+    "unchanged_vs_v002": [
+      "nvn_tf_diag.h",
+      "nvn_obj.h",
+      "hle_nvn.c",
+      "nvn_kd_res.h",
+      "nvn_protos.h",
+      "AGENTS.md"
+    ]
+  },
+  "V3.1": {
+    "status": "PASS",
+    "executed": true,
+    "what": "ds_scan extracted verbatim (v003 4129-4151); same stream [TF,SET_RT,END]; three modes",
+    "expected": "ON keep (DS_USED, why=OP_TF_DIAG), OFF/INVALID restore pre-A2b default (DS_FREE, why unchanged=0)",
+    "actual": {
+      "ON": {
+        "r": "DS_USED",
+        "why": 42
+      },
+      "OFF": {
+        "r": "DS_FREE",
+        "why": 0
+      },
+      "INVALID": {
+        "r": "DS_FREE",
+        "why": 0
+      }
+    },
+    "controls": [
+      "without TF all modes DS_FREE",
+      "TF after the pass boundary does not change OFF"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/evidence/run_plain.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/mutants/m1_ds_tf_gate_removed/run.log"
+    ]
+  },
+  "V3.2": {
+    "status": "PASS (fragment) / SKIP (whole hoist_try)",
+    "executed": "fragment",
+    "what": "minimal scan fragment with the v003 TF arm verbatim; other arms stubbed to 'a hoistable clear was reached'",
+    "expected": "ON aborts before the clear; OFF/INVALID falls through like the pre-A2b default and reaches it",
+    "actual": {
+      "ON": 0,
+      "OFF": 1,
+      "INVALID": 1,
+      "control_no_tf": {
+        "ON": 1,
+        "OFF": 1
+      },
+      "hoist_take_still_refuses_tf": true
+    },
+    "not_executed": [
+      "hoist_try planning/acceptance (R/S/rt_same/h_ser/ClearColor)",
+      "hoist group execution"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/evidence/run_plain.log"
+    ]
+  },
+  "V3.3": {
+    "status": "PASS",
+    "executed": true,
+    "what": "pure predicate, no latch, order invariance, local scanner still stops, consumer unchanged",
+    "checks": [
+      "repeated scans identical",
+      "pre-index scan -> tf_diag_enter -> lookahead gives the same verdict",
+      "a preceding non-TF scan cannot alter a later TF verdict",
+      "fz_next still stops with bad=1",
+      "consumer call still applies exactly one event"
+    ],
+    "source_facts": [
+      "g_tf_diag_seen absent in v003",
+      "fz_prefilter has no seen guard",
+      "barrier body is one pure return expression",
+      "10 barrier call sites = 8 inherited + 2 new mode gates (ds_scan, hoist_try)"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/evidence/run_plain.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/evidence/inheritance.json"
+    ]
+  },
+  "V3.4": {
+    "status": "PASS (inheritance table)",
+    "same_bodies_inherit": [
+      "fz_next",
+      "hoist_skipped",
+      "hoist_take",
+      "defer_try",
+      "sdx_decide",
+      "frz_op",
+      "tf_diag_case"
+    ],
+    "changed_bodies_retested": [
+      "tf_diag_barrier (V3.3)",
+      "ds_scan (V3.1)",
+      "hoist_try (V3.2 fragment)",
+      "fz_prefilter (V3.3 caller + V002-S S03)",
+      "tf_diag_enter (V3.3 order)"
+    ],
+    "table": [
+      {
+        "function": "tf_diag_barrier",
+        "v002_sha": "5bc67eed54967e8f23d52a9cab4f412147a7f6f2070ca8b8c8554abd49499666",
+        "v003_sha": "a6c8dad70619757fb195131a99c645f7e7500809dfd3508bbbead2b0d33a2086",
+        "same": false,
+        "inheritable": "must be retested in v003"
+      },
+      {
+        "function": "ds_scan",
+        "v002_sha": "295e28dccf49c2f37b82415c21b0b8bd95b71d485827db1e885cf8596fdeb428",
+        "v003_sha": "f2fc6c3aced4c452d13d96f8d505246fd3aff841d75cfa69950a27bd7df29b13",
+        "same": false,
+        "inheritable": "must be retested in v003"
+      },
+      {
+        "function": "hoist_try",
+        "v002_sha": "3432f8694fb61debc302bf3f82682c0ef90804d1cb87e565b84c3ae64e3002ec",
+        "v003_sha": "34456e39f89a14791d93bcdb2245bf946b11abb69144f22664bf041c9054cd9b",
+        "same": false,
+        "inheritable": "must be retested in v003"
+      },
+      {
+        "function": "fz_next",
+        "v002_sha": "f954a2f5c714f1ab2ec4bdc34cccbe9b33c0380a65e82efb03f78b673e055d60",
+        "v003_sha": "f954a2f5c714f1ab2ec4bdc34cccbe9b33c0380a65e82efb03f78b673e055d60",
+        "same": true,
+        "inheritable": "V002-S/V002 evidence for this body"
+      },
+      {
+        "function": "hoist_skipped",
+        "v002_sha": "fd0503a4d223e82bf7605157d4e07b9dd977933431c9435762f5ee42bda0635f",
+        "v003_sha": "fd0503a4d223e82bf7605157d4e07b9dd977933431c9435762f5ee42bda0635f",
+        "same": true,
+        "inheritable": "V002-S/V002 evidence for this body"
+      },
+      {
+        "function": "hoist_take",
+        "v002_sha": "30088833bd9831f203234b5e85c6d6757699fc24c108e14a3179a79653adad5d",
+        "v003_sha": "30088833bd9831f203234b5e85c6d6757699fc24c108e14a3179a79653adad5d",
+        "same": true,
+        "inheritable": "V002-S/V002 evidence for this body"
+      },
+      {
+        "function": "defer_try",
+        "v002_sha": "b76c28a97918086f39807df9ac7b5170cc33c109094f8455d5dab214efd3ef7d",
+        "v003_sha": "b76c28a97918086f39807df9ac7b5170cc33c109094f8455d5dab214efd3ef7d",
+        "same": true,
+        "inheritable": "V002-S/V002 evidence for this body"
+      },
+      {
+        "function": "sdx_decide",
+        "v002_sha": "91ea1cc26093210032803a1e9d1f239f0286db671ce20ee0ecde7fdfd572b2a4",
+        "v003_sha": "91ea1cc26093210032803a1e9d1f239f0286db671ce20ee0ecde7fdfd572b2a4",
+        "same": true,
+        "inheritable": "V002-S/V002 evidence for this body"
+      },
+      {
+        "function": "frz_op",
+        "v002_sha": "2256b908704b1e704c5d9bc41dd25939a4da43e8ffbe00b542af467682fa4162",
+        "v003_sha": "2256b908704b1e704c5d9bc41dd25939a4da43e8ffbe00b542af467682fa4162",
+        "same": true,
+        "inheritable": "V002-S/V002 evidence for this body"
+      },
+      {
+        "function": "fz_prefilter",
+        "v002_sha": "0d3653427dd2a62b6e592c37a17f2a6f00af0ad3f51e0d98922c84877615cfcc",
+        "v003_sha": "2b3f036096a393b133fa8e271f552e26a549b4410bc59ad412a18435dcb24ec8",
+        "same": false,
+        "inheritable": "must be retested in v003"
+      },
+      {
+        "function": "tf_diag_enter",
+        "v002_sha": "514c5178cf1c881c2f9764326025cadde31d069ed5507bfee5f9eddb82bdd676",
+        "v003_sha": "9291d53de69a9514918aa7283abdb32c2b071a73c8c961806568dbb9abf474b8",
+        "same": false,
+        "inheritable": "must be retested in v003"
+      },
+      {
+        "function": "tf_diag_case",
+        "v002_sha": "431b17d69ed1d863d29863bdc0dd120ef303ed70851c16e73f5f8d1eb816f625",
+        "v003_sha": "431b17d69ed1d863d29863bdc0dd120ef303ed70851c16e73f5f8d1eb816f625",
+        "same": true,
+        "inheritable": "V002-S/V002 evidence for this body"
+      }
+    ],
+    "note": "whole-file hash change is not used as a reason to rerun everything; unchanged bodies inherit V002/V002-S evidence by SHA",
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/evidence/inheritance.json"
+    ]
+  },
+  "mutation": {
+    "caught": "1/1",
+    "list": [
+      {
+        "mutant": "m1_ds_tf_gate_removed",
+        "compile_rc": 0,
+        "run_rc": 1,
+        "failed": 2,
+        "first_fail": "V3.1 OFF/INVALID restored DS_USED again"
+      }
+    ]
+  },
+  "limits": [
+    "hoist_try, full fuse planning, defer main scan, sdx index construction, frz_op body were not executed",
+    "V002-S SKIP items remain (see v002/validator/supplement/result.json)",
+    "no GPU/Metal/PSO/device/hostbuild/guest/gate/resource sampling",
+    "no claim on mode/lifetime/stream safety or real producer; A2c not opened"
+  ],
+  "route": "NO-GO",
+  "freeze": {
+    "state": "frozen awaiting review",
+    "no_commit_or_push": true,
+    "repo_and_candidate_untouched": true
+  }
+}

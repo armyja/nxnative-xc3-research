@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "purpose": "Supervised verification decisions; separate from shader_facts.tsv; not runtime authorization",
+  "write_owner": "supervisor",
+  "contracts": [
+    {
+      "id": "TF.CPU.A1A2a",
+      "status": "accepted-limited",
+      "candidate_manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/candidate.json",
+      "review": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/supervisor-review.json",
+      "evidence_result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v001/validator/result.json",
+      "claim": "C01-C07 hold within disclosed CPU verification scope",
+      "not_proven": [
+        "real TF execution",
+        "NVN semantics",
+        "GPU writes",
+        "full renderer integration"
+      ]
+    },
+    {
+      "id": "TF.CPU.A2b",
+      "status": "accepted-limited",
+      "candidate_manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/candidate.json",
+      "review": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/supervisor-review.json",
+      "evidence_result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v003/validator/result.json",
+      "claim": "F1/F2 repaired with scoped independent CPU execution/inheritance; not all renderer paths executed",
+      "not_proven": [
+        "hoist full planning not executed",
+        "full fuse plan not executed",
+        "defer main/Q execution not covered",
+        "sdx index construction not executed",
+        "frz full body not executed",
+        "CPU subset/stubs only; not GPU/NVN semantics"
+      ]
+    },
+    {
+      "id": "TF.CPU.A2c",
+      "status": "accepted-limited",
+      "candidate_manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/candidate.json",
+      "review": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/supervisor-review.json",
+      "evidence_result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/validator/result.json",
+      "claim": "Fixed startup enablement and HIT-only observer guard verified in bounded CPU extraction",
+      "not_proven": [
+        "static init concurrency not verified",
+        "PROF/big forwarding body not executed",
+        "full kd_res_line entry not executed",
+        "MLOG durability not guaranteed",
+        "V001.F3 size is not memory boundary proof",
+        "full renderer/scanner optimizer paths not all executed",
+        "no real host or guest or GPU execution"
+      ]
+    },
+    {
+      "id": "TF.CPU.OBSERVATION_PLAN",
+      "status": "accepted-limited",
+      "candidate_manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v007/candidate.json",
+      "review": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v007/supervisor-review.json",
+      "evidence_result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v007/validator/result.json",
+      "claim": "Complete production-format synthetic chain, evidence-error cleanup, scoped launch path checks and targeted negative tests verified",
+      "not_proven": [
+        "real host capture",
+        "complete 180s gate",
+        "real exemption dump content",
+        "PROF/big/full renderer",
+        "V001.F3 actual command memory bounds",
+        "cross-device rejection execution"
+      ]
+    }
+  ],
+  "pending_candidates": [],
+  "open_findings": [
+    {
+      "id": "F1",
+      "disposition": "required A2c startup-mode/lifecycle constraint; no runtime toggles; targeted revalidation before enabling producer"
+    },
+    {
+      "id": "F2",
+      "disposition": "nonblocking diagnostic reason cleanup; invalid kind remains fail-closed"
+    },
+    {
+      "id": "F3",
+      "disposition": "known trusted-stream boundary limitation; not memory-safety proof; producer and stream lifetime preconditions required before enabled host"
+    },
+    {
+      "id": "F4",
+      "disposition": "equivalent mutant / redundant guard; no fix required"
+    },
+    {
+      "id": "V002.F1",
+      "disposition": "resolved in V003 limited CPU scope"
+    },
+    {
+      "id": "V002.F2",
+      "disposition": "resolved in V003 limited CPU scope"
+    },
+    {
+      "id": "V002.F3",
+      "disposition": "supplemental independent coverage pending"
+    },
+    {
+      "id": "V004.F1",
+      "disposition": "resolved in V005 limited CPU scope"
+    },
+    {
+      "id": "V004.F2",
+      "disposition": "resolved in V005 limited CPU scope"
+    }
+  ],
+  "route_status": "NO-GO",
+  "observation_plan_status": "ready-for-single-run-authorization"
+}

@@ -19,11 +19,31 @@
 #include "nvn_imgdiag.h"
 #include "nvn_psort_multi.h"
 #include "nvn_kd_geom.h"
+#include "nvn_kd_res.h"
+#include "nvn_tf_diag.h"
 #include "../tex/nvn_fmt_mtl.h"
 #include "nvn_ssboobs.h"
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/nvn_deswizzle_gpu.h"
 #include "nvn_builtin.h"
+
+// ---------- TF diagnostic scan boundary (A2b; default off, inert unless DM_NVN_TF_DIAG == "1") ----------
+// Every scan/prediction consults this before it may return success evidence across an OP_TF_DIAG record. The predicate is
+// payload-free (opcode + fixed mode only): no TF payload, guest memory, shader or Metal resource is touched here, and no
+// state of the A1/A2a shadow model is changed by any scan. This is a pure predicate: no latch, no scan-order-dependent
+// history. Every scanner that must not return success evidence across the event carries its own local barrier below;
+// fz_prefilter stays a coarse filter and must not be the only rejection (the full scanners still run and reject).
+extern int dm_tf_diag_get_mode(void);
+// Read-only accessors defined with the A2a consumer block below; declared here because the C04 formatter is used earlier.
+const tf_diag_state *dm_tf_diag_snapshot(void);
+uint64_t dm_tf_diag_events(void);
+uint64_t dm_tf_diag_copies(void);
+int dm_tf_diag_depth(void);
+static int tf_diag_on(void);
+static int tf_diag_barrier(uint32_t op) { return tf_diag_is_boundary(op, OP_TF_DIAG, dm_tf_diag_get_mode()); }
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(OP_TF_DIAG < 64, "cmdstat/allocprof opcode buckets are 64 wide; OP_TF_DIAG must stay below");
+#endif
 #include "nvn_dirty.h"
 #include "nvn_refl.h"
 #include "nvn_cover.h"
@@ -4036,7 +4056,8 @@ static uint64_t g_stat_s_only, g_stat_d_only;   // Of those, the number of passe
 // The exec loop, the store lookahead (sdx index) and the depth-stencil lookahead (ds_scan) all skip by it - otherwise the lookahead would take the clear at the original position as 'cleared again' and wrongly judge the early-cleared content redundant
 #define HOIST_MAX 40   // At most 4 groups × (1 set-target op + 8 clears)
 static const uint8_t *g_hoist_skip[HOIST_MAX]; static int g_hoist_n; static uint64_t g_hoist_groups;
-static int hoist_skipped(const uint8_t *p) { for (int i = 0; i < g_hoist_n; i++) if (g_hoist_skip[i] == p) return 1; return 0; }
+static int hoist_skipped(const uint8_t *p) { op_hdr hh; memcpy(&hh, p, sizeof hh); if (tf_diag_barrier(hh.op)) return 0;   // A2b: never treat a TF record as skipped
+    for (int i = 0; i < g_hoist_n; i++) if (g_hoist_skip[i] == p) return 1; return 0; }
 typedef struct { const uint8_t *p, *ret[8]; int ret_n, rest_i, bad; } fz_cursor;
 static int fz_next(fz_cursor *c, const uint8_t **out, op_hdr *oh, const void **oa) {
     for (int guard = 0; guard < 1000000; guard++) {
@@ -4054,6 +4075,7 @@ static int fz_next(fz_cursor *c, const uint8_t **out, op_hdr *oh, const void **o
             default: break;
         }
         const uint8_t *p = c->p; c->p += h.size;
+        if (tf_diag_barrier(h.op)) { c->bad = 1; return 0; }   // A2b: TF event = candidate boundary; every caller stops on FALSE (no end-of-stream success evidence)
         if (g_hoist_n && hoist_skipped(p)) continue;
         if (out) *out = p; if (oh) *oh = h; if (oa) *oa = a; return 1;
     }
@@ -4106,7 +4128,8 @@ static int defer_next(int at_q_only, uint64_t after) {   // Slot number of the n
 }
 static void defer_release_one(defer_t *d) { if (d->active) { g_defer_nact--; if (d->at_q) g_defer_natq--; if (d->in_p) g_defer_pend = NULL; } for (int i = 0; i < d->n; i++) free(d->snap[i].S_); memset(d, 0, sizeof *d); }
 static void defer_clear_all(void) { for (int i = 0; i < 4; i++) defer_release_one(&g_defer_slots[i]); g_defer_nact = g_defer_natq = 0; g_defer_pend = NULL; }
-static int hoist_take(const uint8_t *p) { for (int i = 0; i < g_hoist_n; i++) if (g_hoist_skip[i] == p) { g_hoist_skip[i] = g_hoist_skip[--g_hoist_n]; return 1; } return 0; }
+static int hoist_take(const uint8_t *p) { op_hdr hh; memcpy(&hh, p, sizeof hh); if (tf_diag_barrier(hh.op)) return 0;   // A2b: the real loop must execute the event, not skip it
+    for (int i = 0; i < g_hoist_n; i++) if (g_hoist_skip[i] == p) { g_hoist_skip[i] = g_hoist_skip[--g_hoist_n]; return 1; } return 0; }
 enum { DS_FREE = 0, DS_USED = 1, DS_RET = 2 };
 static int g_ds_why; static int g_ds_scanned; static int g_ds_need;   // g_ds_need: need accumulated during the scan, 1 depth 2 stencil   // Diagnostics: the opcode that triggered the 'used' verdict (for a draw, records 1000 + dt*100 + dw*10 + st), and the number of ops scanned
 static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
@@ -4121,6 +4144,7 @@ static int ds_scan(const uint8_t *p, ds_st *ds, int depth) {
                 int r = ds_scan((const uint8_t *)t, ds, depth + 1); if (r != DS_RET) return r; break; }
             case OP_SET_RT: case OP_COPY_B2B: case OP_CLEAR_BUF: case OP_UPDATE_UB: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX: case OP_DISPATCH: return DS_FREE;
             case OP_CLEAR_COLOR: case OP_CLEAR_DS: g_ds_why = h.op; return DS_USED;
+            case OP_TF_DIAG: if (tf_diag_barrier(h.op)) { g_ds_why = h.op; return DS_USED; } break;   // A2b: only an active boundary keeps depth/stencil; OFF/INVALID falls through to the original default path
             case OP_BIND_STATE: { const p_bind_state *b = a; if (b->kind == 5) memcpy(ds, b->bytes, sizeof *ds); break; }
             case OP_DRAW: case OP_DRAW_IDX:   // Depth test / write → depth needed; stencil test → stencil needed; can stop once both are needed
                 g_ds_need |= (ds->dt || ds->dw ? 1 : 0) | (ds->st ? 2 : 0);
@@ -4491,6 +4515,7 @@ static void sdx_walk(const uint8_t *p, int depth) {
     if (depth > 64) { g_sdx_ok = 0; return; }
     for (uint32_t guard = 0; guard < 4000000 && p && g_sdx_ok; guard++) {
         op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
+        if (tf_diag_barrier(h.op)) { g_sdx_ok = 0; return; }   // A2b: TF event invalidates the index; sdx_decide() then returns 0 (full store fallback)
         if (g_sdx_nop == g_sdx_opcap) { g_sdx_opcap = g_sdx_opcap ? g_sdx_opcap * 2 : 16384; g_sdx_op = realloc(g_sdx_op, g_sdx_opcap * sizeof *g_sdx_op); }
         uint32_t seq = g_sdx_nop; g_sdx_op[g_sdx_nop++] = p;
         switch (h.op) {
@@ -4613,6 +4638,7 @@ static void hoist_try(void) {
         op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
         switch (h.op) {
             case OP_END: case OP_CALL: case OP_COPY_T2T: case OP_COPY_B2T: case OP_COPY_T2B: case OP_CLEAR_TEX: case OP_DISPATCH: case OP_RENDER_COND: return;
+            case OP_TF_DIAG: if (tf_diag_barrier(h.op)) return; break;   // A2b: only an active boundary stops the clear-hoist candidate; OFF keeps scanning as before
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
             case OP_DRAW: case OP_DRAW_IDX: if (in_grp) return; break;
             case OP_SCISSOR: sc = *(const p_scissor *)a; has_sc = 1; break;
@@ -4999,6 +5025,7 @@ static void defer_try(const p_draw *dw, const p_draw_idx *di) {
     const uint8_t *p = g_exec_next, *p_end = NULL, *qop = NULL; const p_set_rt *q = NULL; p_set_rt scan_rt = R.rt; int srt_hit = -1, ci = 0, draws = 1, p_has_draw = 1; defer_collect_reads(&g_defer, pg, tex, img);   // The current draw is P's first
     for (int guard = 0; guard < 200000; guard++) {
         op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8;
+        if (tf_diag_barrier(h.op)) { g_defer.reason = 17; g_defer.reason_op = h.op; goto fail; }   // A2b: deferred-candidate range cannot cross a TF event
         if (g_hoist_n && hoist_skipped(p)) { p += h.size; continue; }
         switch (h.op) {
             case OP_END: { const uint8_t *nx = defer_cont(&ci); if (!nx) { g_defer.reason = 1; goto fail; } p = nx; continue; }
@@ -5034,6 +5061,7 @@ static void defer_try(const p_draw *dw, const p_draw_idx *di) {
                 if (shared) {   // An empty render pass (targets set, then changed again without drawing or clearing) touches no attachment: it is neither taken as Q nor counted as a conflict
                     const uint8_t *e = p + h.size; int ec = ci, empty = 0;
                     for (int g2 = 0; g2 < 200000; g2++) { op_hdr he; memcpy(&he, e, sizeof he);
+                        if (tf_diag_barrier(he.op)) break;   // A2b: empty-pass proof cannot cross a TF event
                         if (he.op == OP_JUMP) { memcpy(&e, e + 8, 8); continue; }
                         if (he.op == OP_END) { const uint8_t *nx = defer_cont(&ec); if (!nx) break; e = nx; continue; }
                         if (he.op == OP_SET_RT) { empty = 1; break; }
@@ -5051,6 +5079,7 @@ fail:
 q_found:
     p = qop; op_hdr qh; memcpy(&qh, p, sizeof qh); p += qh.size; int q_body = 0, q_clears = 0;   // Binding tracking continues from the main scan's state (does not go back to S at the start of P)
     for (int guard = 0; guard < 200000; guard++) { op_hdr h; memcpy(&h, p, sizeof h); const void *a = p + 8; if (h.op == OP_JUMP) { memcpy(&p, a, 8); continue; }
+        if (tf_diag_barrier(h.op)) { g_defer.reason = 17; g_defer.reason_op = h.op; goto fail; }   // A2b: Q recheck cannot cross a TF event
         // The whole Q segment (up to the next SetRenderTargets / end of list): no draw may sample P's color attachments through a view covering P's level -- after deferral P's result is still in the tile and has not landed in main memory, so sampling would read old content
         if (h.op == OP_DRAW || h.op == OP_DRAW_IDX) { if (defer_prog_hits(pg, tex, img, &g_defer.p_rt, 1, 1)) { g_defer.reason = 14; goto fail; } q_body = 1; p += h.size; continue; }
         if (q_body && (h.op == OP_SET_RT || h.op == OP_END)) break;
@@ -5506,6 +5535,153 @@ static void kd_geom_line(const p_draw *dw, const p_draw_idx *di) {
     }
     MLOG("%s", line);
 }
+static struct { int init, on, valid, closed; uint8_t gs[8], ps[8]; char gs_hex[17], ps_hex[17]; } g_gsres;
+static void gsres_hex(char *out, const uint8_t *v) { for (int i=0;i<8;i++) snprintf(out+2*i, 3, "%02x", v[i]); }
+static void gsres_init(void) {
+    if (g_gsres.init) return;
+    g_gsres.init = 1;
+    const char *e = getenv("DM_NVN_GSRES");
+    int r = kdr_parse_cfg(e, g_gsres.gs, g_gsres.ps);
+    if (r < 0) { g_gsres.on = 0; g_gsres.closed = 1; return; }             // absent: latch off
+    if (!r) { MLOG("[gs-res] invalid DM_NVN_GSRES; observer closed"); g_gsres.closed = 1; return; }
+    gsres_hex(g_gsres.gs_hex, g_gsres.gs); gsres_hex(g_gsres.ps_hex, g_gsres.ps);
+    g_gsres.on = 1; g_gsres.valid = 1;
+}
+// C04: independent TF-intent observer line. Read-only: it formats the current shadow snapshot plus the record's own
+// frame/pass/VS/PS and the configured target GS. No hash, no key query, no program materialization, no guest memory and
+// no Metal call. Every append is checked; on overflow only the explicit diagnostic-error line is emitted (never a partial
+// normal line). Invalidated fields are never presented as a currently known binding (bound0=none instead of addr/size).
+// D04: the shared emit exit is also reached by non-hit results (diagnostic-error / target-not-obtained / gs-key-mismatch
+// all jump to emit). The result check is an explicit guard, not an inference from the code path: only KDR_HIT may snapshot
+// or format the intent line. Relying on "non-hit never reaches here" would be wrong.
+static int kd_tf_intent_wanted(const kdr_record *r) { return r && r->result == KDR_HIT && tf_diag_on(); }
+static int kd_tf_intent_line(char *b, size_t cap, const kdr_record *r) {
+    const tf_diag_state *st = dm_tf_diag_snapshot();
+    size_t at = 0;
+    if (!b || !cap || !r || !st) return 0;
+    if (!kdr_append(b, cap, &at, "[tf-intent] frame=%llu pass=%llu vs=%s ps=%s gs=%s final_pass_association=none interpretation=observed-replay-intent",
+                    (unsigned long long)r->frame, (unsigned long long)r->pass, r->vs, r->ps, g_gsres.gs_hex)) return 0;
+    if (!kdr_append(b, cap, &at, " active=%s pause=%s reason=%s seq=%llu events=%llu copies=%llu depth=%d",
+                    tf_diag_active_name(st->active), tf_diag_pause_name(st->pause), tf_diag_reason_name(st->reason),
+                    (unsigned long long)st->seq, (unsigned long long)dm_tf_diag_events(),
+                    (unsigned long long)dm_tf_diag_copies(), dm_tf_diag_depth())) return 0;
+    if (st->bound0_valid) { if (!kdr_append(b, cap, &at, " bound0=valid addr=%#llx size=%llu", (unsigned long long)st->bound0_addr, (unsigned long long)st->bound0_size)) return 0; }
+    else if (!kdr_append(b, cap, &at, " bound0=none")) return 0;
+    if (!kdr_append(b, cap, &at, " begin=%#llx end=%#llx draw=%#llx",
+                    (unsigned long long)st->begin_addr, (unsigned long long)st->end_addr, (unsigned long long)st->draw_addr)) return 0;
+    return 1;
+}
+static void kd_res_line(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
+    gsres_init();
+    if (!g_gsres.on || g_gsres.closed) return;                             // off/invalid/closed: no key query, no slot copy
+    if (!pr || !pr->sh[1] || !pr->sh[1]->key) return;
+    char sty[16]; int psstyle = kdr_ps_style(pr->sh[1]->key, sty, sizeof sty);
+    kdr_record r; memset(&r, 0, sizeof r);
+    int nv = snprintf(r.vs, sizeof r.vs, "%s", pr->sh[0] && pr->sh[0]->key ? pr->sh[0]->key : "-");
+    int np = snprintf(r.ps, sizeof r.ps, "%s", pr->sh[1]->key);
+    int ns = snprintf(r.ps_style, sizeof r.ps_style, "%s", sty);
+    if (nv < 0 || nv >= (int)sizeof r.vs || np < 0 || np >= (int)sizeof r.ps || ns < 0 || ns >= (int)sizeof r.ps_style) {
+        MLOG("[gs-res] diagnostic-error: identity copy overflow; observer closed"); g_gsres.closed = 1; return;
+    }
+    r.frame = (uint64_t)atomic_load(&g_cur_frame); r.pass = (uint64_t)g_stat_pass;
+    r.drawkind = di != NULL; r.prim = dw ? dw->prim : di->prim;
+    r.count = dw ? dw->count : di->count; r.instances = dw ? dw->instances : di->instances;
+    r.base_instance = dw ? dw->base_instance : di->base_instance;
+    r.indirect = (dw ? dw->ind : di->ind) != 0;
+    if (psstyle < 0) { r.result = KDR_DIAG_ERROR; goto emit; }
+    if (psstyle != 0 && psstyle != 1) { r.result = KDR_TARGET_NOT_OBTAINED; goto emit; }
+    if (memcmp(pr->sh[1]->key, g_gsres.ps_hex, 16) != 0) { r.result = KDR_TARGET_NOT_OBTAINED; goto emit; }
+    const prog_t *gs = S.bst[2];
+    r.gs.present = gs != NULL; r.gs.nstage = gs ? (int)gs->nstage : 0;
+    if (gs && gs->nstage > 0 && gs->nstage <= KDR_MAX_KEYS) {
+        for (unsigned i = 0; i < gs->nstage; i++) {
+            r.gs.query_calls++;
+            if (prog_key_cached(gs, i, r.gs.key[i])) r.gs.have[i] = 1;
+        }
+    }
+    kdr_result why;
+    if (!kdr_gs_identity(&r.gs, g_gsres.gs, &why)) { r.result = why; goto emit; }
+    r.result = KDR_HIT;
+    r.ubo_avail = 1;
+    for (int i = 0; i < 16; i++) if (S.ubo[2][i].addr || S.ubo[2][i].size) r.ubo_mask |= (uint16_t)(1u << i);
+    r.ubo0_addr = S.ubo[2][0].addr; r.ubo0_size = S.ubo[2][0].size;
+    r.tex_avail = r.samp_avail = 1;
+    uint32_t tex_nonzero = 0, tex_others = 0, samp_nonzero = 0;
+    for (int i = 0; i < 128; i++) {
+        if (S.tex[2][i]) { r.tex.mask[i >> 6] |= 1ull << (i & 63); tex_nonzero++; }
+        if (S.samp[2][i]) { r.samp.mask[i >> 6] |= 1ull << (i & 63); samp_nonzero++; }
+    }
+    r.tex.slot[0] = 0; r.tex.handle[0] = S.tex[2][0]; r.tex.n = 1;
+    for (int i = 1; i < 128 && r.tex.n < KDR_MAX_SLOTS; i++) if (S.tex[2][i]) {
+        r.tex.slot[r.tex.n] = (uint32_t)i; r.tex.handle[r.tex.n] = S.tex[2][i]; r.tex.n++; tex_others++;
+    }
+    r.tex.omitted = tex_nonzero - (S.tex[2][0] ? 1u : 0u) - tex_others;
+    r.samp.slot[0] = 0; r.samp.handle[0] = S.samp[2][0]; r.samp.n = 1;
+    uint32_t samp_others = 0;
+    for (int i = 1; i < 128 && r.samp.n < KDR_MAX_SLOTS; i++) if (S.samp[2][i]) {
+        r.samp.slot[r.samp.n] = (uint32_t)i; r.samp.handle[r.samp.n] = S.samp[2][i]; r.samp.n++; samp_others++;
+    }
+    r.samp.omitted = samp_nonzero - (S.samp[2][0] ? 1u : 0u) - samp_others;
+    uint64_t th = S.tex[2][0];
+    if (th) {
+        uint32_t tid = (uint32_t)(th & 0xfffff);
+        r.tex_candidate = 1; r.tex_raw = th; r.tex_tid = tid;
+        if (tid) { r.tex_hint_avail = 1; r.tex_hint_ser = h_ser(th); }
+        pthread_mutex_lock(&g_rmu);
+        if (g_treg && g_ntreg > 0 && tid > 0 && tid < (uint32_t)g_ntreg) {
+            r.tex_registry_checked = 1;
+            kdr_tex_ent e; memset(&e, 0, sizeof e);
+            if (g_treg[tid].ok) {
+                e.ok = 1; e.target = g_treg[tid].t.d.target; e.format = g_treg[tid].t.d.format;
+                e.w = g_treg[tid].t.d.width; e.h = g_treg[tid].t.d.height; e.d = g_treg[tid].t.d.depth;
+                e.samples = g_treg[tid].t.d.samples; e.serial = g_treg[tid].t.serial;
+            }
+            if (kdr_tex_entry_ok(tid, g_ntreg, &e)) {
+                r.tex_registered = 1; r.tex_desc_avail = 1;
+                r.tex_target = e.target; r.tex_format = e.format; r.tex_w = e.w; r.tex_h = e.h; r.tex_d = e.d;
+                r.tex_samples = e.samples; r.tex_reg_serial = e.serial;
+            }
+        }
+        pthread_mutex_unlock(&g_rmu);
+    }
+    uint64_t sh = th;   // candidate sampler comes from the combined texture handle; S.samp is separate raw state below
+    uint64_t sid64 = sh ? (sh >> 20) : 0;
+    r.samp_candidate = sh != 0; r.samp_raw = sh; r.samp_sid64 = sid64;
+    if (sh) {
+        pthread_mutex_lock(&g_rmu);
+        if (g_sreg && g_sreg_ok && g_nsreg > 0 && sid64 < (uint64_t)g_nsreg) {
+            r.samp_registry_checked = 1;
+            kdr_samp_ent e; memset(&e, 0, sizeof e);
+            if (g_sreg_ok[sid64]) {
+                e.ok = 1; const samp_par *sp = &g_sreg[sid64];
+                e.minf=sp->minf; e.magf=sp->magf; e.ws=sp->ws; e.wt=sp->wt; e.wr=sp->wr;
+                e.cmp_mode=sp->cmp_mode; e.cmp_func=sp->cmp_func;
+                memcpy(&e.lod_min_bits, &sp->lod_min, 4); memcpy(&e.lod_max_bits, &sp->lod_max, 4);
+                memcpy(&e.lod_bias_bits, &sp->lod_bias, 4); memcpy(&e.aniso_bits, &sp->aniso, 4);
+                for (int i=0;i<4;i++) memcpy(&e.border_bits[i], &sp->border[i], 4);
+            }
+            if (kdr_samp_entry_ok(sid64, g_nsreg, &e)) {
+                r.samp_registered = 1; r.samp_desc_avail = 1;
+                r.samp_minf=e.minf; r.samp_magf=e.magf; r.samp_ws=e.ws; r.samp_wt=e.wt; r.samp_wr=e.wr;
+                r.samp_cmp_mode=e.cmp_mode; r.samp_cmp_func=e.cmp_func;
+                r.samp_lod_min_bits=e.lod_min_bits; r.samp_lod_max_bits=e.lod_max_bits; r.samp_lod_bias_bits=e.lod_bias_bits;
+                r.samp_aniso_bits=e.aniso_bits; for (int i=0;i<4;i++) r.samp_border_bits[i]=e.border_bits[i];
+            }
+        }
+        pthread_mutex_unlock(&g_rmu);
+    }
+    r.tf_known = 0;
+emit:
+    char line[KDR_REC_CAP];
+    if (!kdr_format(line, sizeof line, &r)) { MLOG("[gs-res] diagnostic-error: record formatting overflow; observer closed"); g_gsres.closed = 1; return; }
+    MLOG("%s", line);
+    if (kd_tf_intent_wanted(&r)) {   // C04/D04: explicit KDR_HIT guard; non-hit results reach this exit via goto emit
+        char tfl[512];
+        if (kd_tf_intent_line(tfl, sizeof tfl, &r)) MLOG("%s", tfl);
+        else MLOG("[tf-intent] diagnostic-error");
+    }
+    g_gsres.closed = 1;
+}
 static int kd_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     static char key[24]; static int left = -1, every; static uint64_t last = ~0ull;
     if (left < 0) { left = 0; const char *e = getenv("DM_NVN_KEYDUMP");
@@ -5519,6 +5695,7 @@ static int kd_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     fprintf(stderr, "[kd] F%llu pass %llu vs=%s fs=%s prim %d vertices %d instances %d first %d base_vertex %d base_instance %d target %s\n", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass,
             pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1]->key, dw ? dw->prim : di->prim, count, inst, first, di ? di->base_vertex : 0, binst, R.rt.n && R.rt.color[0] ? "yes" : "no");
     kd_geom_line(dw, di);
+    kd_res_line(pr, dw, di);
     for (int i = 0; i < S.nattr && i < 16; i++) fprintf(stderr, "[kd]   attr %d format %#x offset %u stream %u\n", i, (unsigned)S.attr[i].fmt, (unsigned)S.attr[i].offset, (unsigned)S.attr[i].stream);
     for (int s_ = 0; s_ < S.nstream && s_ < 16; s_++) {
         uint32_t st = S.stream[s_].stride, dv = S.stream[s_].divisor;
@@ -7256,6 +7433,7 @@ static int rt_op(unsigned op) {   // Non-set-target operations in an extrapolate
     return 0;
 }
 static int frz_op(unsigned op, const void *a) {   // Returns 1 = this operation is not executed
+    if (tf_diag_barrier(op)) return 0;   // A2b: a TF event is always executed by the real case; frame-freeze compatibility is unproven
     if (op == OP_SET_RT) {
         const p_set_rt *r = a; int win = 0;
         for (int i = 0; i < r->n; i++) { uint64_t s_; int lv, sl; rt_sub(r, i, &s_, &lv, &sl); if (s_ && xv_present(s_)) win = 1; }
@@ -7569,7 +7747,45 @@ static void ssbo_obs_draw(void) {                             // real replay dra
     MLOG("[ssbo-obs] done key=%02x%02x%02x%02x%02x%02x%02x%02x slots=16 candidates=%d ambiguous=%d", g_so.key[0], g_so.key[1], g_so.key[2], g_so.key[3], g_so.key[4], g_so.key[5], g_so.key[6], g_so.key[7], cand, amb);
     g_so.done = 1; g_so.mode = 2;
 }
+// ---------- TF diagnostic consumer (A2a: real replay context, still default off, no GPU work) ----------
+// ---- TF-DIAG-A2A-BEGIN ----
+// Observed replay intent only: this never writes buffers, never resolves resources and never logs per event. Every hook
+// first reads the A1 mode getter; unless DM_NVN_TF_DIAG was literally "1" at startup the hooks do nothing at all (no
+// state change, no payload read, no counting). The shadow belongs to the replay context: it is initialised to unknown
+// once per top-level submission (mtl_exec depth 0) and is inherited across nested OP_CALL, never reset by OP_BEGIN/OP_END.
+extern int dm_tf_diag_get_mode(void);   // defined in hle_nvn.c; A1 keeps it fixed at OFF with no startup enable
+static tf_diag_state g_tf_diag;         // observed replay intent of the current submission
+static uint64_t g_tf_diag_events;       // events consumed in this submission (saturating diagnostic counter, on-mode only)
+static uint64_t g_tf_diag_copies;       // payload copies actually performed (saturating, on-mode only)
+static int g_tf_diag_depth;             // mtl_exec recursion depth; 0 on entry means top level
+static int tf_diag_on(void) { return dm_tf_diag_get_mode() == TF_DIAG_MODE_ON; }
+static void tf_diag_count(uint64_t *c) { if (*c != UINT64_MAX) (*c)++; }   // saturating: never wraps
+static int tf_diag_enter(void) {        // returns nonzero when this mtl_exec call is the top level of a submission
+    if (!tf_diag_on()) return 0;
+    if (g_tf_diag_depth++ == 0) { tf_diag_init(&g_tf_diag); g_tf_diag_events = 0; g_tf_diag_copies = 0; return 1; }
+    return 0;
+}
+static void tf_diag_leave(void) { if (tf_diag_on() && g_tf_diag_depth > 0) g_tf_diag_depth--; }
+static void tf_diag_case(uint32_t hsize, const void *a) {
+    if (!tf_diag_on()) return;                           // off/invalid: no payload read, no state change, no counters
+    tf_diag_count(&g_tf_diag_events);
+    if (hsize != (uint32_t)(sizeof(op_hdr) + TF_DIAG_PAYLOAD) || (((uintptr_t)a) & 7u) != 0) {
+        tf_diag_mark_unknown(&g_tf_diag, TF_DIAG_REASON_BAD_RECORD);   // bad size/alignment: never touch the payload
+        tf_diag_tick(&g_tf_diag);
+        return;
+    }
+    p_tf_diag e;
+    memcpy(&e, a, sizeof e);                             // 32 bytes copied into a local; never cast the stream
+    tf_diag_count(&g_tf_diag_copies);   // counted only after a real copy
+    tf_diag_apply(&g_tf_diag, &e);
+}
+const tf_diag_state *dm_tf_diag_snapshot(void) { return &g_tf_diag; }   // read-only, for CPU tests: observed replay intent
+uint64_t dm_tf_diag_events(void) { return g_tf_diag_events; }
+uint64_t dm_tf_diag_copies(void) { return g_tf_diag_copies; }
+int dm_tf_diag_depth(void) { return g_tf_diag_depth; }   // read-only for CPU tests
+// ---- TF-DIAG-A2A-END ----
 void mtl_exec(const uint8_t *p) {
+    tf_diag_enter();
     static int inited; if (!inited) { inited = 1; state_reset(); }
     ssbo_obs_arm();
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
@@ -7593,6 +7809,7 @@ void mtl_exec(const uint8_t *p) {
                     if (g_fz.active) fz_unskip();
                     if (g_hoist_n) { MLOG("[RED] pure-clear pass hoisting: %d hoisted operations were not reached by the end of the submission; cleared (should not happen)", g_hoist_n); g_hoist_n = 0; }
                 }
+                tf_diag_leave();
                 return;   // An end-of-pass triggered outside a list (present / CPU readback etc.) must not scan expired command memory: a null start point means store everything
             case OP_BEGIN: break;
             case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
@@ -7696,10 +7913,13 @@ void mtl_exec(const uint8_t *p) {
             case OP_DISPATCH: dispatch(a); break;
             case OP_BARRIER: { int32_t bits; memcpy(&bits, a, 4); if (bits) g_game_barrier = 1; break; }   // ordered at the next draw pass (barrier_game)
             case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: break;
+            case OP_TF_DIAG: tf_diag_case(h.size, a); break;   // A2a: one consumer call, no GPU work
             default: break;
         }
         p += h.size;
     }
+    // No second exit: the loop only leaves through OP_END's return above, which already calls tf_diag_leave(). A crash or
+    // longjmp out of the renderer would leave g_tf_diag_depth elevated; that case is not covered (documented gap).
 }
 
 // ---------- Present: draw the swapchain texture to the CAMetalLayer; optional screenshot ----------

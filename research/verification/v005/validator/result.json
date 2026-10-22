@@ -1,0 +1,259 @@
+{
+  "task": "V005",
+  "role": "independent verifier",
+  "generated_at": "2026-10-22T11:27:05",
+  "candidate": {
+    "manifest_sha256": "c320d468a23afd5b65f2efd32e77dd266c3f0ad5baac8112ae17e371e874334f",
+    "diff_sha256": "0a85617405e3743b43066bb2c71b0fae66507962b5e4f7bc0e74fbfe1bc34671",
+    "hle_sha256": "029efe768623a7753be3bfd9bd365a9ca2cff62821343e3f8a002ba3bdedfcdb",
+    "mtl_sha256": "ee708ad5143889302ae91e38a73f4bb1e73e07e7282d1f11ba1abd44b24f3105",
+    "changed": [
+      "hle_nvn.c",
+      "nvn_mtl.m"
+    ],
+    "unchanged": [
+      "nvn_tf_diag.h",
+      "nvn_obj.h",
+      "nvn_kd_res.h",
+      "nvn_protos.h",
+      "AGENTS.md"
+    ]
+  },
+  "V5.1": {
+    "status": "PASS",
+    "executed": true,
+    "checks": [
+      "getter OFF before first init",
+      "requested ON + full table -> 7/7 installed, getter ON after publish",
+      "getter still OFF inside the installer's success log (publish is after the install)",
+      "requested ON + missing/occupied name -> 0 slot writes, effective OFF, failure log 'not enabled, effective mode OFF'",
+      "getter OFF inside the failure log (no early publish)",
+      "barrier stays inert when effective OFF",
+      "env change + re-init cannot revive the mode",
+      "OFF/INVALID: no install, no new log, g_nsem=3 kept"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/validator/evidence/run_1_full.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/validator/evidence/run_1_missing.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/validator/evidence/run_unset_full.log"
+    ]
+  },
+  "V5.2": {
+    "status": "PASS",
+    "executed": true,
+    "table": "7 result values x {ON, OFF, INVALID}: only HIT+ON emits exactly one tf-intent; 0 for the other 20 combinations",
+    "notes": [
+      "gs-res line and one-shot close unchanged",
+      "HIT format-failure path is before the guard (static); kd_res_line entry (off/closed/format-fail) not executed"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/validator/evidence/run_1_full.log"
+    ]
+  },
+  "V5.3": {
+    "status": "PASS",
+    "executed": true,
+    "method": "single process: failed install (missing/occupied) -> effective OFF -> KDR_HIT emit -> 0 intent; then real installer+activate on a full table -> ON -> KDR_HIT emit -> exactly 1",
+    "disclosure": "the success contrast calls tf_diag_activate() directly because nvn_init_slots has a static done guard; no production algorithms were modified",
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/validator/evidence/run_1_missing.log"
+    ]
+  },
+  "V5.4": {
+    "status": "PASS",
+    "inherited": [
+      "tf_diag_barrier",
+      "ds_scan",
+      "hoist_try",
+      "fz_next",
+      "defer_try",
+      "sdx_decide",
+      "frz_op",
+      "fz_prefilter",
+      "tf_diag_enter",
+      "tf_diag_case",
+      "kd_tf_intent_line",
+      "hle tf_diag_emit"
+    ],
+    "changed_and_retested": [
+      "hle nvn_init_slots",
+      "tf_diag_install_adapters",
+      "tf_diag_activate"
+    ],
+    "body_table": {
+      "mtl": [
+        {
+          "function": "tf_diag_barrier",
+          "v004_sha": "a6c8dad70619757fb195131a99c645f7e7500809dfd3508bbbead2b0d33a2086",
+          "v005_sha": "a6c8dad70619757fb195131a99c645f7e7500809dfd3508bbbead2b0d33a2086",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "ds_scan",
+          "v004_sha": "f2fc6c3aced4c452d13d96f8d505246fd3aff841d75cfa69950a27bd7df29b13",
+          "v005_sha": "f2fc6c3aced4c452d13d96f8d505246fd3aff841d75cfa69950a27bd7df29b13",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "hoist_try",
+          "v004_sha": "34456e39f89a14791d93bcdb2245bf946b11abb69144f22664bf041c9054cd9b",
+          "v005_sha": "34456e39f89a14791d93bcdb2245bf946b11abb69144f22664bf041c9054cd9b",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "fz_next",
+          "v004_sha": "f954a2f5c714f1ab2ec4bdc34cccbe9b33c0380a65e82efb03f78b673e055d60",
+          "v005_sha": "f954a2f5c714f1ab2ec4bdc34cccbe9b33c0380a65e82efb03f78b673e055d60",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "defer_try",
+          "v004_sha": "b76c28a97918086f39807df9ac7b5170cc33c109094f8455d5dab214efd3ef7d",
+          "v005_sha": "b76c28a97918086f39807df9ac7b5170cc33c109094f8455d5dab214efd3ef7d",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "sdx_decide",
+          "v004_sha": "91ea1cc26093210032803a1e9d1f239f0286db671ce20ee0ecde7fdfd572b2a4",
+          "v005_sha": "91ea1cc26093210032803a1e9d1f239f0286db671ce20ee0ecde7fdfd572b2a4",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "frz_op",
+          "v004_sha": "2256b908704b1e704c5d9bc41dd25939a4da43e8ffbe00b542af467682fa4162",
+          "v005_sha": "2256b908704b1e704c5d9bc41dd25939a4da43e8ffbe00b542af467682fa4162",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "fz_prefilter",
+          "v004_sha": "2b3f036096a393b133fa8e271f552e26a549b4410bc59ad412a18435dcb24ec8",
+          "v005_sha": "2b3f036096a393b133fa8e271f552e26a549b4410bc59ad412a18435dcb24ec8",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "tf_diag_enter",
+          "v004_sha": "9291d53de69a9514918aa7283abdb32c2b071a73c8c961806568dbb9abf474b8",
+          "v005_sha": "9291d53de69a9514918aa7283abdb32c2b071a73c8c961806568dbb9abf474b8",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "tf_diag_case",
+          "v004_sha": "431b17d69ed1d863d29863bdc0dd120ef303ed70851c16e73f5f8d1eb816f625",
+          "v005_sha": "431b17d69ed1d863d29863bdc0dd120ef303ed70851c16e73f5f8d1eb816f625",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        },
+        {
+          "function": "kd_tf_intent_line",
+          "v004_sha": "b5f34794a3b8eb6ffa142a094757cb256dd86d630bdfa4bb0a6c3a399a1a8687",
+          "v005_sha": "b5f34794a3b8eb6ffa142a094757cb256dd86d630bdfa4bb0a6c3a399a1a8687",
+          "same": true,
+          "disposition": "inherit V004 evidence"
+        }
+      ],
+      "hle": [
+        {
+          "function": "nvn_init_slots",
+          "v004_sha": "a6f123ec3171a84e9b40a82aa96ec815f01d604d7bb22af1c2a01be72fdddfb8",
+          "v005_sha": "d5d620d52e77325f914e199cc2b93f62f18fa241ff9e8c0c06f1e7f28918cdf1",
+          "same": false
+        },
+        {
+          "function": "tf_diag_install_adapters",
+          "v004_sha": null,
+          "v005_sha": "0ca048e104b53a7cbd616636bef59962c039ea9d079dd87e05431af4cfd5c891",
+          "same": false
+        },
+        {
+          "function": "tf_diag_activate",
+          "v004_sha": null,
+          "v005_sha": "889afdf35536743187bcd95d7ac285277652b148a451eea1edb8d4a16abf0c10",
+          "same": false
+        },
+        {
+          "function": "tf_diag_emit",
+          "v004_sha": "bd38f10d518cdb6a2929defc1592b863bece7cc81694e1088834f4674503d1ef",
+          "v005_sha": "bd38f10d518cdb6a2929defc1592b863bece7cc81694e1088834f4674503d1ef",
+          "same": true
+        }
+      ],
+      "checks": [
+        {
+          "name": "installer returns int",
+          "ok": true
+        },
+        {
+          "name": "activate publishes only after install",
+          "ok": true
+        },
+        {
+          "name": "failure keeps fixed mode OFF",
+          "ok": true
+        },
+        {
+          "name": "init calls activate once",
+          "ok": true
+        },
+        {
+          "name": "explicit HIT guard exists",
+          "ok": true
+        },
+        {
+          "name": "shared emit uses the guard",
+          "ok": true
+        }
+      ]
+    },
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v005/validator/evidence/inheritance.json"
+    ]
+  },
+  "mutation": {
+    "caught": "2/2",
+    "list": [
+      {
+        "mutant": "m1_hit_guard_removed",
+        "compile_rc": 0,
+        "run_rc": 1,
+        "failed": 1
+      },
+      {
+        "mutant": "m2_publish_on_failure",
+        "compile_rc": 0,
+        "run_rc": 1,
+        "failed": 3
+      }
+    ]
+  },
+  "findings": [
+    {
+      "id": "V005.F1",
+      "severity": "info",
+      "contract": "V5.1",
+      "title": "INVALID now collapses to effective OFF (getter returns OFF, not INVALID)",
+      "expected": "no behavioral difference is required by the contracts (only ON is active)",
+      "actual": "getter OFF; all consumers observed inert; the INVALID enum value is no longer observable at runtime",
+      "reproducer": "./build/t_v5 01 full",
+      "anchor": "hle_nvn.c tf_diag_activate"
+    }
+  ],
+  "limits": [
+    "startup init concurrency still unproven (static done, non-atomic); no thread-safe claim",
+    "install-in-progress observation uses the verifier's LOG hook (disclosed); production code unchanged",
+    "PROF/big wrappers, full kd_res_line entry, log flush/delivery, GPU/Metal/guest/gate not covered; V001.F3 limitation retained"
+  ],
+  "route": "NO-GO",
+  "freeze": {
+    "state": "frozen awaiting adjudication",
+    "no_commit_or_push": true
+  }
+}

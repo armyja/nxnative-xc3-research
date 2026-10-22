@@ -1,0 +1,99 @@
+{
+  "task": "V007",
+  "role": "independent verifier",
+  "generated_at": "2026-10-22T11:57:44",
+  "candidate": {
+    "manifest_sha256": "0504466fd304a6e6df31be28bf66ea710e8136696926fdfa9ab621c2135dbf3b",
+    "files": 23,
+    "all_files_match": true,
+    "host_sha256": "931a241f60e2bd1d3f7c672c817b163972e6ecccfd7128607053698f6a3d12b3",
+    "sources_equal_v005": true,
+    "changed_vs_v006": [
+      "candidate/plan/identity.json",
+      "candidate/plan/launcher.py",
+      "candidate/plan/preflight.log",
+      "candidate/plan/supervise_tfintent.py",
+      "candidate/plan/tests/test_fixes.py",
+      "candidate/plan/tfintent.infra.sha",
+      "candidate/plan/tfintent_parser.py"
+    ],
+    "identity_refs_verified": true
+  },
+  "items": [
+    {
+      "id": "V7.1",
+      "status": "PASS",
+      "what": "23/23 manifest SHAs; identity.json refs (parser/supervisor/launcher/tfintent_parser) match the actual frozen files; host/source inherited by SHA, host not executed"
+    },
+    {
+      "id": "V7.2",
+      "status": "PASS",
+      "what": "F1/F2/F3/F4/F6 counterexamples re-run unchanged: real MLOG prefix chain, attr/stream/uniform sub-lines, bare PS, depth i32 bounds, u64 bounds, prefix raw retention, malformed KD/suffix/hex",
+      "detail": {
+        "cases": 16,
+        "fail": 9
+      },
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v007/validator/evidence/chain.json"
+      ]
+    },
+    {
+      "id": "V7.3",
+      "status": "PASS",
+      "what": "F1 forced serialisation failures: OSError (dirs) and injected non-OSError both reclaimed the child (real PID check), kept timing.txt, and never claimed success; HIT-only still not validated; dump-after-hit priority kept",
+      "detail": {
+        "cases": 6,
+        "fail": 3
+      },
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v007/validator/evidence/sup.json"
+      ]
+    },
+    {
+      "id": "V7.4",
+      "status": "PASS (one SKIP)",
+      "what": "F5 run-path identity: fresh experiments path OK, relative/existing/outside/symlink escape rejected before mkdir; device branch source-verified only (SKIP: would need an existing dir inside the run root); preflight positive + tampered real-copy negative",
+      "detail": {
+        "cases": 10,
+        "fail": 0
+      },
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v007/validator/evidence/rest.json"
+      ]
+    },
+    {
+      "id": "V7.5",
+      "status": "PASS",
+      "what": "two V006 SKIP items: sampling-error injection (sample-nonzero) and two synthetic exempt dumps followed by a correct chain",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v007/validator/evidence/sup.json"
+      ]
+    },
+    {
+      "id": "V7.6",
+      "status": "PASS",
+      "what": "2 discriminating mutations (import 0, run != 0): old header keys break the evidence/hit path; removing prefix handling breaks the real-prefix chain"
+    }
+  ],
+  "runs": {
+    "chain": {
+      "cases": 16,
+      "fail": 0
+    },
+    "sup": {
+      "cases": 6,
+      "fail": 0
+    },
+    "rest": {
+      "cases": 10,
+      "fail": 0,
+      "skipped": 1
+    }
+  },
+  "limits": [
+    "host never executed; 23-file identity and identity.json refs verified by SHA",
+    "full 180 s gate, real dump contents, real host capture, PROF/F3 still not covered",
+    "F5 device branch is source-verified only (SKIP); short secs and synthetic sampler used (disclosed)",
+    "CPU pass is not a launch authorization; route NO-GO"
+  ]
+}

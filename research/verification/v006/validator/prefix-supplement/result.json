@@ -1,0 +1,91 @@
+{
+  "task": "V006-PREFIX-S",
+  "role": "independent verifier (increment only; parent report/result untouched)",
+  "generated_at": "2026-10-22T11:52:46",
+  "source_basis": {
+    "mlog_definition_line": "v005 nvn_mtl.m:72",
+    "mlog_body_sha256": "478ff8d0f9a4a9c9f0df343030e48245f9929170008f5ff801e1ef4ff66a8707",
+    "mlog_text": "#define MLOG(...) do { fprintf(stderr, \"[dm] [nvn-mtl] \" __VA_ARGS__); fputc('\\n', stderr); } while (0)",
+    "d04_emit_context_lines": "v005 nvn_mtl.m:5674-5681",
+    "d04_emit_context_sha256": "42b55dc07e7f9e0e280627a6a19ffc08d044027aac95b56f3cabd7c126962cb5",
+    "kd_header": "fprintf(stderr, \"[kd] F...\") at 5695 — bare, no MLOG prefix"
+  },
+  "findings": [
+    {
+      "id": "V006.F6",
+      "severity": "high",
+      "title": "the real [dm] [nvn-mtl] [tf-intent] line is silently dropped: chain never completes and the raw line is not retained",
+      "expected": "chain completes on the real log line (supervisor asked whether it completes/waits and whether raw is kept)",
+      "actual": "chain result stays None (waiting, no terminal); chain.raw empty; supervisor .lines keeps only kd+gs; validated=0",
+      "anchor": "candidate/plan/tfintent_parser.py:105 (starts with bare '[tf-intent]' only); supervise_tfintent.py:101-110 (record filter also bare)",
+      "reproducer": "python3 prefix-supplement/prefix_test.py"
+    }
+  ],
+  "prefix_tests": {
+    "control_bare": {
+      "id": "P1",
+      "name": "control: bare [tf-intent] completes the chain",
+      "ok": true,
+      "detail": {
+        "result": "hit",
+        "why": "hit (tf-intent chain)"
+      }
+    },
+    "real_prefixed": {
+      "id": "P2",
+      "name": "real [dm] [nvn-mtl] [tf-intent] prefix completes the chain",
+      "ok": false,
+      "detail": {
+        "result": null,
+        "why": null,
+        "intent": null
+      }
+    },
+    "raw": {
+      "id": "P3",
+      "name": "real prefixed tf line is kept in chain.raw",
+      "ok": false,
+      "detail": {
+        "raw": []
+      }
+    },
+    "direct_parse": {
+      "id": "P4",
+      "name": "parse_tf_intent accepts the real prefixed line",
+      "ok": false,
+      "detail": {
+        "error": "not a tf-intent line"
+      }
+    },
+    "supervisor_lines": {
+      "id": "P5",
+      "name": "supervisor retains the real prefixed tf line",
+      "ok": false,
+      "detail": {
+        "lines": 2
+      }
+    },
+    "supervisor_complete": {
+      "id": "P6",
+      "name": "supervisor completes on the real prefixed line",
+      "ok": false,
+      "detail": {
+        "validated": false,
+        "intent": false,
+        "terminal": null
+      }
+    },
+    "pass": 1,
+    "fail": 5
+  },
+  "f1_finally": {
+    "question": "does the F1 KeyError escape the finally block before child cleanup?",
+    "answer": "yes, by control flow: the coverage/stop write is inside finally's try/except OSError (supervise_tfintent.py:282-290); a KeyError is not OSError, so it propagates out of the finally block and the following child TERM/KILL/wait (291-297) and timing.txt write (299) are skipped. Existing synthetic evidence: S1/S2/S5 exited 1 with no stop.json/timing.txt.",
+    "note": "no real leftover was produced or needed; this is source control flow plus the earlier synthetic runs"
+  },
+  "limits": [
+    "CPU only; no real host (not even --help); real capture not run",
+    "parent v006 report/result/evidence untouched; this is an additive increment"
+  ],
+  "route": "NO-GO"
+}

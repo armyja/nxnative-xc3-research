@@ -1,0 +1,186 @@
+{
+  "task": "V002-S",
+  "role": "independent verifier (no development, no fixes)",
+  "generated_at": "2026-10-22T11:04:51",
+  "frozen_identity": {
+    "candidate_manifest_sha256": "4cf79789795c936752b96d01a63ca680a1c00d60f13121f4c1b3cf618085b5f2",
+    "mtl_sha256": "64ba5054280df310ec98f66485f7a4760dda47ab57ee558bb00f115bfca69701",
+    "tf_diag_h_sha256": "578957c717cdd1a583ea1159295afeadf1bf96d4aa83550b145b3b5708aadf77"
+  },
+  "candidate_manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/candidate.json",
+  "note": "Read-only frozen v002 candidate; all artifacts under v002/validator/supplement/. Parent result.json/report.md were not modified.",
+  "S01": {
+    "status": "PASS (executed fallback chain, disclosed stubs)",
+    "what_ran": "sdx_decide() extracted verbatim (4590-4607) + sd_finish()'s decision part transcribed (4 lines) + sd_need (4161). sdx_bucket() stubbed (single bucket).",
+    "cases": [
+      {
+        "case": "control: valid index + CLEAR at P",
+        "expected": "discard (state=2)",
+        "actual": "discard",
+        "result": "PASS"
+      },
+      {
+        "case": "TF invalidates index (g_sdx_ok=0)",
+        "expected": "full-store fallback why=6",
+        "actual": "why=6, dead=0",
+        "result": "PASS"
+      },
+      {
+        "case": "valid index + READ",
+        "expected": "store why=1",
+        "actual": "why=1",
+        "result": "PASS"
+      },
+      {
+        "case": "event on a hoist-skipped op",
+        "expected": "undecided(5) -> store",
+        "actual": "why=5",
+        "result": "PASS"
+      },
+      {
+        "case": "discardable ledger + TF invalidation",
+        "expected": "conservative keep",
+        "actual": "keep",
+        "result": "PASS"
+      }
+    ],
+    "not_executed": [
+      "sdx_walk (index construction) and the real sdx_bucket hash table",
+      "the Metal set*StoreAction calls in sd_finish"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/supplement/evidence/run_s01_sdx.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/supplement/evidence/mutants.json"
+    ]
+  },
+  "S02": {
+    "status": "PASS (fragment) / SKIP (full candidate path)",
+    "what_ran": "defer_try's empty-pass inner scan extracted verbatim (5061-5067), wrapped with the production e/ec initialisation; `break` retargeted to `return empty` (documented).",
+    "cases": [
+      {
+        "case": "next op is SET_RT",
+        "expected": "empty proof holds (not taken as Q)",
+        "actual": "empty=1",
+        "result": "PASS"
+      },
+      {
+        "case": "draw present",
+        "expected": "not empty",
+        "actual": "empty=0",
+        "result": "PASS"
+      },
+      {
+        "case": "TF inside the proof range (ON)",
+        "expected": "proof stops -> not empty",
+        "actual": "empty=0",
+        "result": "PASS"
+      },
+      {
+        "case": "OFF control, same stream",
+        "expected": "TF skipped -> empty holds",
+        "actual": "empty=1",
+        "result": "PASS"
+      },
+      {
+        "case": "OP_END without continuation",
+        "expected": "not empty",
+        "actual": "empty=0",
+        "result": "PASS"
+      },
+      {
+        "case": "JUMP to SET_RT",
+        "expected": "empty holds",
+        "actual": "empty=1",
+        "result": "PASS"
+      }
+    ],
+    "caller_consequence": "empty=0 => the SET_RT becomes a Q candidate (`q = r; qop = p; goto q_found`), and defer_try's Q recheck has its own boundary check (5080) that fails the candidate with reason 17 when the scan reaches the same TF (source anchor; not executed). empty=1 => the scan continues without taking it as Q.",
+    "not_executed": [
+      "defer_try main scan loop and its candidate acceptance",
+      "Q recheck loop body (only the boundary-fail path is source-anchored)",
+      "defer_q_superset / defer_prog_hits / snapshot machinery"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/supplement/evidence/run_s02_defer_empty.log"
+    ]
+  },
+  "S03": {
+    "status": "PASS (static path + executable counterfactual)",
+    "static": {
+      "sites": 9,
+      "classified": 9,
+      "unknown": 0,
+      "false_handling": {
+        "return": "5",
+        "break": "2",
+        "loop-condition": "2"
+      },
+      "merge_activation": "g_fz.active = 1 (line 5234) after the 'planned' label (5205) and after the last plan fz_next (5209)",
+      "prefilter": "fz_prefilter returns 0 (no candidate) when g_tf_diag_seen is set (line 5112)"
+    },
+    "executed": [
+      {
+        "case": "production shape vs 'FALSE==end' shape on [draw, TF, SET_RT]",
+        "expected": "prod refuses, buggy would accept",
+        "actual": "prod=0 buggy=1",
+        "result": "PASS"
+      },
+      {
+        "case": "control without TF",
+        "expected": "both reach later pass",
+        "actual": "prod=1 buggy=1",
+        "result": "PASS"
+      },
+      {
+        "case": "ordinary end-of-stream",
+        "expected": "FALSE -> refused, not success",
+        "actual": "0",
+        "result": "PASS"
+      },
+      {
+        "case": "precompile collection stops at boundary",
+        "expected": "one draw, not two",
+        "actual": "draws=1",
+        "result": "PASS"
+      }
+    ],
+    "not_executed": [
+      "full fuse_try planning and the fusion acceptance path",
+      "ixc/wide index collectors' full bodies"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/supplement/evidence/run_s03_callers.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/supplement/evidence/callers.json"
+    ]
+  },
+  "mutants": {
+    "caught": "2/2",
+    "all_compile_rc_0": true,
+    "list": [
+      {
+        "mutant": "m1_sdx_decide_ok_guard_removed",
+        "contract": "S01",
+        "compile_rc": 0,
+        "run_rc": 1,
+        "failed": 2,
+        "note": "removing the index-validity guard makes a TF-invalidated ledger discard again"
+      },
+      {
+        "mutant": "m2_fz_next_boundary_removed",
+        "contract": "S03",
+        "compile_rc": 0,
+        "run_rc": 1,
+        "failed": 2,
+        "note": "removing the cursor boundary makes the production shape cross TF"
+      }
+    ]
+  },
+  "limits": [
+    "Renderer/GPU semantics not covered; no hostbuild/Metal/PSO/device/guest/gate/resources",
+    "S01 uses a single-bucket sdx_bucket stub and constructed ledger; index construction itself not run",
+    "S02 executes only the empty-pass fragment; defer_try's main scan/Q acceptance are source-anchored",
+    "S03 full planning not executed; merge success is argued from call-site classification + activation ordering"
+  ],
+  "inheritance_rule": "v003 may inherit these results only for the exact functions whose SHA is unchanged: nvn_mtl.m 4590-4607 (sdx_decide), 5061-5067 (defer empty scan), 4059-4081 (fz_next), 35-44 (barrier/seen). Any edit to those ranges invalidates the corresponding S-item.",
+  "route": "NO-GO (no execution authorization implied)"
+}

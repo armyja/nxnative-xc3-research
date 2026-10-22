@@ -1,0 +1,270 @@
+{
+  "task": "V004",
+  "role": "independent verifier",
+  "generated_at": "2026-10-22T11:20:48",
+  "candidate": {
+    "manifest": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/candidate.json",
+    "manifest_sha256": "ba064c2d2fd9fce235ed2de9c07280e09f876f31316b14ae1b5896baa1a90a2e",
+    "diff_sha256": "4e6dc6cc053f1cf3b28b1bd57ca7717cd3cbd353b7b827e44d5ba2fa32dc0bb2",
+    "hle_sha256": "de46fccbb3fee56b7754a3acdd585a190e1ddd7c12611b8387dc862b44a28b84",
+    "mtl_sha256": "a3e43b03095dff46f74b8e89f2070160c0a145ef4dbf879abe7387c754f7eaf4",
+    "hdr_sha256": "b27fb321eb78f3aee678c3a72cf9de3cc7ba37744350a2682b02ef08688008ba",
+    "kd_sha256": "9956f931b3a25eb10c82a08fb926a0b5dd27789b315b55860e33ba26aaab4642",
+    "changed_vs_v003": [
+      "nvn_tf_diag.h",
+      "hle_nvn.c",
+      "nvn_mtl.m"
+    ],
+    "unchanged_vs_v003": [
+      "nvn_obj.h",
+      "nvn_kd_res.h",
+      "nvn_protos.h",
+      "AGENTS.md"
+    ]
+  },
+  "D01": {
+    "status": "PASS",
+    "executed": true,
+    "checks": [
+      "getter OFF before the first nvn_init_slots",
+      "absent/empty/0 -> OFF, 01/2 -> INVALID, never installs",
+      "mode \"1\" -> ON and 7 slots installed (full table)",
+      "env change + re-init does not change the fixed mode",
+      "re-init is a no-op (static done)"
+    ],
+    "limits": [
+      "nvn_init_slots is not thread-safe by construction (static done, non-atomic); no concurrency claim is made"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/evidence/run_init.log"
+    ]
+  },
+  "D02": {
+    "status": "PASS (install) / FINDING (observer partial state)",
+    "executed": true,
+    "checks": [
+      "missing name -> 0 installed (all-or-none)",
+      "occupied name -> 0 installed (all-or-none)",
+      "no non-TF slot replaced",
+      "g_nsem stays 3 (semantic impl count untouched)"
+    ],
+    "finding": "F2: with a missing/occupied TF name the mode is still ON, so the observer gate (tf_diag_on()) passes although nothing was installed",
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/evidence/run_init.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/mutants/m2_mode_not_fixed/run.log"
+    ]
+  },
+  "D03": {
+    "status": "PASS (recording) / SKIP (PROF, big-stack)",
+    "executed": true,
+    "checks": [
+      "ON: Bind records exactly one 40-byte OP_TF_DIAG",
+      "OFF/INVALID: adapter inert (0 bytes, 0 allocs)",
+      "plural adapter never dereferences caller ranges (PROT_NONE) and records first/count only"
+    ],
+    "skipped": [
+      "DM_NVN_PROF wrapper: nvn_prof_entry wraps every installed slot after init (hle_nvn.c:1174); its forwarding body is host/asm and was not executed",
+      "nvn_big_entry path: TF names are nvnCommandBuffer*, excluded by the big-stack loop; not executed either"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/evidence/run_init.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/evidence/run_init_asan.log"
+    ]
+  },
+  "D04": {
+    "status": "FAIL",
+    "executed": true,
+    "expected": "one tf-intent line only when the gs-res record is a KDR_HIT; non-HIT results, GSRES off/closed, and TF OFF must not take the snapshot or emit",
+    "actual": "tf-intent is emitted for every result that reaches the shared exit: target-not-obtained, no-geometry-source, identity-unavailable, gs-key-mismatch, invalid-config, diagnostic-error (6/6)",
+    "mechanism": "the emit tail gates only on tf_diag_on(); r.result is never checked, and the goto-emit paths for non-HIT results reach the same exit",
+    "anchor": "dm/gfx/nvn/nvn_mtl.m:5674 (if (tf_diag_on()) ...) with 5587-5599 (goto emit for non-HIT results)",
+    "passing_parts": [
+      "KDR_HIT + TF ON: exactly one line",
+      "TF OFF: gs-res line only",
+      "one-shot close after the line"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/evidence/run_obs.log",
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/mutants/m1_observer_gate_forbidden/run.log"
+    ]
+  },
+  "D05": {
+    "status": "PASS",
+    "executed": true,
+    "checks": [
+      "final_pass_association=none and interpretation=observed-replay-intent present",
+      "active/pause/reason/seq(UINT64_MAX)/events/copies/depth printed in domain",
+      "invalid binding printed as bound0=none, never bound0=valid",
+      "valid binding prints addr/size; begin/end/draw are separate fields (no implied binding)",
+      "negative depth and reason=none stay in-domain; _b/_bf keys printed verbatim",
+      "short buffer and null buffer rejected (no partial normal line)"
+    ],
+    "limits": [
+      "formatting success != guaranteed log delivery: MLOG is a sink here; no flush/落盘 check is claimed",
+      "kdr_format (gs-res format) is unchanged vs v003 by SHA and was not modified by this candidate"
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/evidence/run_obs.log"
+    ]
+  },
+  "D06": {
+    "status": "PASS (limited) / parent items retained",
+    "F1_from_V001": "the runtime trigger is removed: no setter, mode parsed once and immutable, getter OFF before that; the old leave logic is NOT shown to be generally safe",
+    "F3_from_V001": "size check is still not a memory-boundary proof (consumer unchanged)",
+    "a2b_barriers": "body-identical vs v003 for barrier/ds_scan/hoist_try/fz_next/hoist_*/defer_try/sdx_decide/frz_op/fz_prefilter/tf_diag_* -> V002/V003 evidence inherited by body SHA",
+    "body_sha_table": [
+      {
+        "function": "tf_diag_barrier",
+        "v003_sha": "a6c8dad70619757fb195131a99c645f7e7500809dfd3508bbbead2b0d33a2086",
+        "v004_sha": "a6c8dad70619757fb195131a99c645f7e7500809dfd3508bbbead2b0d33a2086",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "ds_scan",
+        "v003_sha": "f2fc6c3aced4c452d13d96f8d505246fd3aff841d75cfa69950a27bd7df29b13",
+        "v004_sha": "f2fc6c3aced4c452d13d96f8d505246fd3aff841d75cfa69950a27bd7df29b13",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "hoist_try",
+        "v003_sha": "34456e39f89a14791d93bcdb2245bf946b11abb69144f22664bf041c9054cd9b",
+        "v004_sha": "34456e39f89a14791d93bcdb2245bf946b11abb69144f22664bf041c9054cd9b",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "fz_next",
+        "v003_sha": "f954a2f5c714f1ab2ec4bdc34cccbe9b33c0380a65e82efb03f78b673e055d60",
+        "v004_sha": "f954a2f5c714f1ab2ec4bdc34cccbe9b33c0380a65e82efb03f78b673e055d60",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "hoist_skipped",
+        "v003_sha": "fd0503a4d223e82bf7605157d4e07b9dd977933431c9435762f5ee42bda0635f",
+        "v004_sha": "fd0503a4d223e82bf7605157d4e07b9dd977933431c9435762f5ee42bda0635f",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "hoist_take",
+        "v003_sha": "30088833bd9831f203234b5e85c6d6757699fc24c108e14a3179a79653adad5d",
+        "v004_sha": "30088833bd9831f203234b5e85c6d6757699fc24c108e14a3179a79653adad5d",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "defer_try",
+        "v003_sha": "b76c28a97918086f39807df9ac7b5170cc33c109094f8455d5dab214efd3ef7d",
+        "v004_sha": "b76c28a97918086f39807df9ac7b5170cc33c109094f8455d5dab214efd3ef7d",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "sdx_decide",
+        "v003_sha": "91ea1cc26093210032803a1e9d1f239f0286db671ce20ee0ecde7fdfd572b2a4",
+        "v004_sha": "91ea1cc26093210032803a1e9d1f239f0286db671ce20ee0ecde7fdfd572b2a4",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "frz_op",
+        "v003_sha": "2256b908704b1e704c5d9bc41dd25939a4da43e8ffbe00b542af467682fa4162",
+        "v004_sha": "2256b908704b1e704c5d9bc41dd25939a4da43e8ffbe00b542af467682fa4162",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "fz_prefilter",
+        "v003_sha": "2b3f036096a393b133fa8e271f552e26a549b4410bc59ad412a18435dcb24ec8",
+        "v004_sha": "2b3f036096a393b133fa8e271f552e26a549b4410bc59ad412a18435dcb24ec8",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "tf_diag_enter",
+        "v003_sha": "9291d53de69a9514918aa7283abdb32c2b071a73c8c961806568dbb9abf474b8",
+        "v004_sha": "9291d53de69a9514918aa7283abdb32c2b071a73c8c961806568dbb9abf474b8",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      },
+      {
+        "function": "tf_diag_case",
+        "v003_sha": "431b17d69ed1d863d29863bdc0dd120ef303ed70851c16e73f5f8d1eb816f625",
+        "v004_sha": "431b17d69ed1d863d29863bdc0dd120ef303ed70851c16e73f5f8d1eb816f625",
+        "same": true,
+        "disposition": "inherit V002/V003 evidence"
+      }
+    ],
+    "evidence": [
+      "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v004/validator/evidence/inheritance.json"
+    ]
+  },
+  "findings": [
+    {
+      "id": "V004.F1",
+      "severity": "high",
+      "contract": "D04",
+      "title": "tf-intent emitted for non-HIT gs-res results",
+      "expected": "only KDR_HIT produces a tf-intent line",
+      "actual": "6 non-HIT results each produce one",
+      "reproducer": "./build/t_obs (D04 matrix)",
+      "anchor": "nvn_mtl.m 5674 + 5587-5599"
+    },
+    {
+      "id": "V004.F2",
+      "severity": "medium",
+      "contract": "D02/D04",
+      "title": "partial install (missing/occupied name) leaves mode ON, so the observer still emits",
+      "expected": "no intent output when the diagnostic was not installed",
+      "actual": "mode ON with 0 installed still passes tf_diag_on()",
+      "reproducer": "./build/t_init 1 missing ; ./build/t_obs",
+      "anchor": "hle_nvn.c 131-133; nvn_mtl.m 5674"
+    },
+    {
+      "id": "V004.F3",
+      "severity": "info",
+      "contract": "D01",
+      "title": "startup init concurrency is unproven (static done flag, not atomic)",
+      "expected": "n/a",
+      "actual": "not verified; no thread-safety claim",
+      "reproducer": "n/a",
+      "anchor": "hle_nvn.c 116"
+    }
+  ],
+  "runs": {
+    "init": {
+      "exit": 0,
+      "pass": 8,
+      "note": "per-variant; matrix in evidence/run_init.log"
+    },
+    "obs": {
+      "exit": 1,
+      "pass": 13,
+      "fail": 6,
+      "note": "the 6 fails are the intended D04 contract cases"
+    },
+    "obs_asan": {
+      "exit": 1,
+      "note": "same 6 failures, no sanitizer diagnostics"
+    },
+    "mutations": {
+      "caught": "2/2",
+      "all_compile_rc_0": true
+    }
+  },
+  "production_vs_model": {
+    "model_input_reachable": [
+      "D04 non-HIT emission (call the shared exit with any result)",
+      "D02 partial install (needs a missing/occupied TF name in main's table)"
+    ],
+    "production_entry_reachable_today": "requires DM_NVN_TF_DIAG=1 and a full 7-name table; the install path itself is the only producer gate; no host run performed"
+  },
+  "route": "NO-GO",
+  "freeze": {
+    "state": "frozen awaiting adjudication",
+    "no_commit_or_push": true
+  }
+}

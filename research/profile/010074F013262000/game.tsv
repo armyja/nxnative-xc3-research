@@ -1,0 +1,101 @@
+# EXPERIMENTAL integration clone: the two-key shader tables of first-runtime-pair with the Mac-only wide address
+# range (mem_reserve 0x1100000000, mem_alias 0x1000000000); stack and app_pool unchanged. Not production, not iOS.
+# EXPERIMENTAL clone for the two-key offline build (first runtime pair). NOT production, NOT iOS.
+# Same identity/memory keys as the baseline, including the explicit zero NVN bases placeholder; only the shader tables differ.
+# Provisional profile of Xenoblade Chronicles 3 (base title 010074F013262000, update 2.2.0), written from
+# statically verifiable facts only. It lives outside the repository on purpose (DM_GAMES_DIR) and is NOT used for
+# a production build. Every key below states its evidence; keys marked PROVISIONAL are guesses, not measurements.
+#
+# Sources: ExeFS of the extracted card at /path/to/external-drive/xc3/build/ExeFS, the RomFS manifest generated from
+# /path/to/external-drive/xc3/build/RomFS (250 files), control.nacp, main.npdm, and dm/games/profile_guess.py.
+#
+# ---- Identity (verified) ----
+# title id: the ACID inside main.npdm holds 0x010074F013262000 at ACID+0x10 (npdm ACID at 0x460, magic "ACID"),
+# and nx_extract reports the same title from the card's NCA.
+title_id	010074F013262000
+program_id	010074F013262000
+# name: the NACP in the card's control data (nx_extract prints "Xenoblade Chronicles 3")
+name	Xenoblade Chronicles 3
+ipa	XenobladeChronicles3.ipa
+app_category	public.app-category.role-playing-games
+
+# ---- Versions ----
+# Build IDs of the four NSO modules as extracted from the card's update (verified).
+#   The first field is the version label. 3 is the NCA header's Version field, which both the base and the update
+#   Program NCA carry; the numeric title version itself was NOT independently established, so do not treat this
+#   number as a measured title version. The display version 2.2.0 does come from the NACP (offset 0x3060).
+# PROVISIONAL: the version label.
+build	v3	2.2.0	main=82d187fe9ef9be921b8e1b1cddf7bd28	sdk=e8cdceb1e77a8465fe20f21928e8d296	subsdk0=be1ee79a9968a35a6b63fc8f1036a6d4	rtld=e79ab9af2ab0517496b6c5630b5c7a69
+package	v3
+# shader_versions: only the update (2.2.0) is extracted, so the shader tables would come from it alone.
+shader_versions	v3
+
+# ---- Modules ----
+# profile_guess: "every module main imports from". main imports 448 dynamic symbols; sdk is nnSdk (26,897
+# exports), subsdk0 is NintendoSDK_movie (10,895 exports), rtld is replaced by the host.
+modules	main subsdk0 sdk
+
+# ---- Graphics ----
+# main imports nvnBootstrapLoader, and the title's shaders live in SPCH ('HCPS') containers inside the RomFS
+# archive /bf3.ard; dm/gfx/tools/spch.py reads them. Nothing here is a Vulkan title.
+graphics	nvn
+
+# Files ----
+# the largest RomFS entry, 9,710,938,520 bytes (verified): the engine's archive body
+romfs_marker	/bf3.ard
+
+# ---- Shaders ----
+# main holds 396 GLSLC outputs: the magic 0x19866891 appears 396 times and every one has a plausible total size at
+# +0x44 (checked). profile_guess's rule reaches this key for the wrong reason (it states the RomFS has no BNSH /
+# BAHS / UnityFS and concludes the shaders are compiled into main) - for this title the game's shaders are the
+# SPCH containers instead, and these 396 are in addition to them.
+shader_main_glslc	on
+# PROVISIONAL: profile_guess's consequence of shader_main_glslc. Whether these 396 GLSLC programs are single-stage
+# and combined per draw has not been measured for this title.
+shader_separable	on
+
+# ---- Memory partition (all PROVISIONAL) ----
+# profile_guess derives these from "main never sets a heap (its memory is its own bss)": main's bss is 8.0 MB and
+# the card's NPDM reports a 32 MB system resource. None of it was measured at run time, and no heap check was run.
+mem_reserve	0x1100000000
+mem_alias	0x1000000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+
+# ---- Image table: EXPERIMENT ONLY (candidate, not a proof)
+# The lighting pixel shader 4bae5b8abd3bec7f statically declares its image handle at c[2] byte 0x120
+# (word 0x48). The runtime pre-draw snapshot for one observed draw had a sole candidate slot 0 and an NVN
+# image register of 0; the actual value at c[2]+0x120 was NOT sampled. Stride 8 is an existing premise of
+# the decoder, the bound descriptor was NVN format 0x0B = R32Uint (agreeing with the declared r32ui), and
+# the range covers offset 0x120 / slot 0 for this experiment only. Texture slots and other constants are
+# untouched.
+# ---- NVN constants: texture base is a DERIVED HYPOTHESIS for this 14-key set only (see report 51):
+# five PS programs have exactly one NVSD sampler with handle 0 and visibility Fragment, and the code handle word
+# points at byte 0x20, so base 0x20 / slots 1 decode slot 0. Pending runtime verification; all other bases stay 0.
+# ---- NVN constants: CPU-ONLY PLACEHOLDERS, NOT MEASURED XC3 FACTS ----
+# The NVN driver-segment bases (texture / sampler / image handles, storage-buffer bases) are unknown for this
+# title and were not measured. 0 means "unknown": nothing is borrowed from another title, and no shader fact is
+# claimed. They exist only so the host header compiles for a headless CPU/memory bring-up, which has no shader
+# libraries (DM_MSL_DIR empty) and exercises no graphics path. Replace with measurements before any graphics work.
+# EXPERIMENT ONLY, not production and not a title-wide measurement: vertex storage-buffer table base 0x110 (unchanged
+# from ssbo-vs110-correct645) and pixel storage-buffer table base 0x510 (this candidate; provenance below).
+# Static constraints behind the vertex hypothesis: raw sbuf offsets 0x110/0x120/0x130 for VS; NVSD U_Instance handle 0
+# (Slct175 p0) and U_SKIP handle 2 (Slct10 p2/p3, one buffer in p3); report80's three non-zero slots stay ambiguous. This
+# does not change any NVSD semantics and does not borrow the Mario comment.
+# PS 0x510 is report89's conditional constraint, NOT a measurement: the two PS programs read sbufs at 0x510 (shd_post
+# slct146 p0 8c8d676f2d2bab80: one sbuf, NVSD has exactly one storage buffer with handle 0), at 0x510/0x520/0x530
+# (shd_lgt slct0 p17 0104dd056a3b1902: NVSD storage buffers handle 0/1/2), and the reused shd_layout slct10 p2 PS has
+# 0x510/0x520 against handles 0/1/2 while its VS 0x130 maps to handle 2 under vs=0x110. The NVSD handle -> NVN register
+# mapping is still UNMEASURED; 0x510 is a candidate base, not a measured table address. The runtime-only key
+# 304f1f866df79c3a (offsets 0x510..0x550) has no located SPCH source/NVSD, so this formula covers it only by arithmetic,
+# not by metadata. Not title-wide, not production. CS stays 0.
+nvn_ssbo_bases	vs=0x110 ps=0x510 cs=0
+nvn_tex_base	0x20
+# EXPERIMENT ONLY (tex27 campaign): texture slot table widened from 16 to 27 so the observed handles 0x28..0x3C
+# (bytes 0xA0..0xF0 under base 0x20, stride 8) decode to slots 16..26. This is the minimum range covering the highest
+# observed formula slot 26; the 20 keys carrying these bindings have no NVSD support, and the existing base/stride
+# premise plus continuity do NOT prove the real title table. No other domain constant is borrowed, no GS/fout change.
+nvn_tex_slots	27
+nvn_samp_base	0
+nvn_img_base	0x120
+nvn_img_slots	1

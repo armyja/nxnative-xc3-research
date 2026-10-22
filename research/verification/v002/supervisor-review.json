@@ -1,0 +1,50 @@
+{
+  "task": "V002",
+  "candidate": "tf-diag-a2b-v002",
+  "decision": "changes-required",
+  "validator_report_sha256": "ac3ba6bf51a9ba9105f85e6b967743970e7af262b17f53b55069528f01b53883",
+  "validator_result_sha256": "7a98e5e78bbe2168f334134da8e769f38fb3f218e7257715e52560118703c2b3",
+  "findings": [
+    {
+      "id": "F1",
+      "action": "mode-gate ds_scan TF case; required"
+    },
+    {
+      "id": "F2",
+      "action": "remove scan-order latch from boundary predicate/prefilter; required deterministic behavior"
+    },
+    {
+      "id": "F3",
+      "action": "independent supplemental CPU coverage for defer/store fallback before enabling producer"
+    },
+    {
+      "id": "F4",
+      "action": "inherit V001 constraints; enforce mode/lifetime at A2c"
+    }
+  ],
+  "route": "NO-GO",
+  "supplemental_evidence": {
+    "result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/results-supplemental.json",
+    "result_sha256": "17768fac37accb0fbd6e3d937ea64f563e8f968c230ccd7d0ce221f93599cebe",
+    "accepted_scope": "Additional shared-cursor CALL/JUMP/rest/hoist CPU coverage and guard-placement static checks",
+    "not_covered": [
+      "sdx_decide/sd_finish execution",
+      "defer_try body execution",
+      "frz_op body execution"
+    ],
+    "decision_unchanged": "changes-required"
+  },
+  "supplement_S": {
+    "result": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/supplement/result.json",
+    "result_sha256": "f6db5469d48a325e8cb16ed215152429d0b4a8aab10b33654c03bd6425e04bd7",
+    "report_sha256": "5d59f0c22d0066c6b8a0b4948585adc7358a228c3a4555c6dc985e7c87d33da4",
+    "accepted_scope": {
+      "S01": "CPU decide + disclosed finish decision adaptation; index construction not executed",
+      "S02": "empty-pass fragment only; defer main/Q bodies not executed",
+      "S03": "caller classification and fz_next-based counterfactual harness; full planning not executed"
+    },
+    "inheritance": "Verify exact bodies AND changed helper dependencies in V003; line numbers alone insufficient",
+    "not_proven": "Full renderer, TF/NVN semantics, GPU, complete defer/fusion plan",
+    "decision_unchanged": "changes-required pending V003"
+  }
+}

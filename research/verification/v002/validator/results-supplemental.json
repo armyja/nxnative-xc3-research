@@ -1,0 +1,87 @@
+{
+  "task": "V002-supplemental",
+  "supersedes_nothing": true,
+  "note": "Additive coverage for V002.F3 after the supervisor ruling. The reviewed artifacts (result.json 7a98e5e7..., report.md ac3ba6bf..., evidence/sha256sums.txt e9ad0c14...) are FROZEN and unchanged.",
+  "parent_handback": "codex queue message [local-uuid-redacted] (V002)",
+  "executed": {
+    "supplemental_tests": {
+      "command": "./build/supplemental",
+      "pass": 6,
+      "fail": 0,
+      "log": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/supplemental_run.log",
+      "covers": [
+        "nested CALL: TF inside sub-list stops the cursor",
+        "CALL/return: cursor resumes in the caller and stops at its TF",
+        "JUMP onto a TF: boundary honoured after the jump",
+        "g_rest remainder: boundary honoured in submission-remainder traversal",
+        "hoist skip list cannot hide TF from the cursor",
+        "OFF control: no boundary in the same nested stream"
+      ]
+    },
+    "guard_dominance": {
+      "command": "python3 src/static_guards.py",
+      "pass": 23,
+      "fail": 0,
+      "log": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/static_guards.json",
+      "covers": [
+        "all 8 barrier call sites are inside their expected functions",
+        "frz_op/fz_prefilter/hoist_skipped/hoist_take: guard is the first statement",
+        "defer main loop: barrier precedes hoist-skip and the switch",
+        "defer Q recheck: barrier precedes the sampling conflict test",
+        "defer goto fail exits without taking the candidate",
+        "ds_scan TF case has no mode gate (B04 finding re-confirmed as a fact)"
+      ],
+      "not_execution": true
+    }
+  },
+  "contract_effect": {
+    "B02": "supplemented: control-flow paths (CALL/return/JUMP/remainder/hoist) now executable, still PASS",
+    "B03": "unchanged: executable ds_scan + source-anchored sdx fallback (sdx_decide not executed)",
+    "B04": "unchanged FAIL: V002.F1 (mode-gating) remains the only contract deviation",
+    "B05": "unchanged PASS with V002.F2 (scan-order latch) recorded as required cleanup",
+    "B06": "unchanged PASS"
+  },
+  "reachability": {
+    "rule": "model-input reachable and production-entry reachable are separate claims (supervisor ruling); crafted-stream reproduction never implies a producer is enabled",
+    "producer_state": {
+      "dm_tf_diag_set_mode": {
+        "definitions": 1,
+        "calls": 0
+      },
+      "op_tf_diag_records_emitted_in_production": false,
+      "source": "v002 snapshot: hle_nvn.c adapter block unchanged vs v001; no slot registration"
+    },
+    "findings": [
+      {
+        "id": "V002.F1",
+        "model_input_reachable": true,
+        "production_entry_reachable": false,
+        "detail": "OFF-mode ds_scan differs from pre-A2b only if a TF record exists in the stream; none is produced"
+      },
+      {
+        "id": "V002.F2",
+        "model_input_reachable": true,
+        "production_entry_reachable": false,
+        "detail": "the seen latch needs ON-mode TF records; requires the producer"
+      },
+      {
+        "id": "V001.F3",
+        "model_input_reachable": true,
+        "production_entry_reachable": false,
+        "detail": "the 32B copy OOB needs a short payload record; not a statement that stream lifetime is guaranteed"
+      },
+      {
+        "id": "V001.F1",
+        "model_input_reachable": true,
+        "production_entry_reachable": false,
+        "detail": "needs a runtime mode toggle, which A2b does not enable"
+      }
+    ]
+  },
+  "limits": [
+    "sdx_decide/sd_finish, defer_try body and frz_op body remain unexecuted; only machine-checked placement/direction facts",
+    "no GPU/Metal/PSO/device/hostbuild; no real producer; no NVN semantics",
+    "route stays NO-GO; this file adds no execution authorization"
+  ],
+  "generated_at": "2026-10-22T11:01:07"
+}

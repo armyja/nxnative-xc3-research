@@ -1,0 +1,196 @@
+{
+  "task": "V002",
+  "role": "independent verifier (no development, no fixes)",
+  "generated_at": "2026-10-22T10:58:17",
+  "candidate": {
+    "manifest_sha256": "4cf79789795c936752b96d01a63ca680a1c00d60f13121f4c1b3cf618085b5f2",
+    "diff_sha256": "22f7cbbb5a534edcea055bea706a350c51226c18ecfb3f044dde360a85d2399d",
+    "changed_vs_v001": [
+      "dm/gfx/nvn/nvn_tf_diag.h",
+      "dm/gfx/nvn/nvn_mtl.m"
+    ],
+    "unchanged_vs_v001": [
+      "dm/gfx/nvn/nvn_obj.h",
+      "dm/gfx/nvn/hle_nvn.c",
+      "dm/gfx/nvn/nvn_kd_res.h",
+      "dm/gfx/nvn/nvn_protos.h",
+      "AGENTS.md"
+    ],
+    "head_is_identity": false
+  },
+  "environment": {
+    "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "cpu_only": true
+  },
+  "contracts": [
+    {
+      "id": "B01",
+      "status": "PASS",
+      "summary": "payload-free predicate; ON-only boundary; scans never move the shadow/emit; repeated scans agree",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/static_checks.json"
+      ],
+      "findings": [
+        "F2"
+      ]
+    },
+    {
+      "id": "B02",
+      "status": "PASS",
+      "summary": "TF never skippable; hoist list intact; cursor stops with bad=1; fuse caller aborts; precompile caller never sees TF as draw/state; frz_op guard first statement",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/mutants/m1_fz_next_boundary_removed/run.log"
+      ],
+      "findings": [
+        "F3"
+      ]
+    },
+    {
+      "id": "B03",
+      "status": "PASS",
+      "summary": "TF -> DS_USED keep (incl. CALL propagation and hoist-list interaction); index invalidation -> decide=0 -> full store",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/mutants/m2_ds_scan_tf_case_removed/run.log"
+      ],
+      "findings": [
+        "F3"
+      ]
+    },
+    {
+      "id": "B04",
+      "status": "FAIL",
+      "summary": "ds_scan's OP_TF_DIAG case is not mode-gated: OFF reproduces DS_USED where the pre-A2b body returned DS_FREE; all other new paths are mode-gated and inert when off",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/static_checks.json"
+      ],
+      "findings": [
+        "F1"
+      ]
+    },
+    {
+      "id": "B05",
+      "status": "PASS",
+      "summary": "seen reset at top-level enter only; latch inside a submission; no wrong-allow found; lifecycle/order dependence reported",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/static_checks.json"
+      ],
+      "findings": [
+        "F2"
+      ]
+    },
+    {
+      "id": "B06",
+      "status": "PASS",
+      "summary": "OP_TF_DIAG<64 assert kept, buckets not widened; precompile path stops at TF before draw/state application",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/static_checks.json",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log"
+      ],
+      "findings": [
+        "F4"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "low",
+      "contract": "B04",
+      "title": "ds_scan OP_TF_DIAG case has no mode gate; OFF/INVALID changes the depth-stencil verdict for the same stream",
+      "anchor": "dm/gfx/nvn/nvn_mtl.m:4145",
+      "reproducer": "./build/v002_tests (B04 case)",
+      "expected": "DS_FREE(0) as in the pre-A2b body",
+      "actual": "DS_USED(1), g_ds_why=OP_TF_DIAG(42)",
+      "today_reachable": false,
+      "reachability_note": "no producer emits OP_TF_DIAG; conservative direction (extra store)",
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log"
+    },
+    {
+      "id": "F2",
+      "severity": "low",
+      "contract": "B05",
+      "title": "g_tf_diag_seen marks produced by mtl_sub_index are wiped by tf_diag_enter; execution-time marks latch, so fz_prefilter results can depend on whether a lookahead ran",
+      "anchor": "dm/gfx/nvn/nvn_mtl.m:36-41,5112,7735 with hle_nvn.c:1062,1066",
+      "reproducer": "./build/v002_tests (B05 cases)",
+      "expected": "a submission-scoped, order-independent boundary property",
+      "actual": "reset ordering makes the mark transient before enter and sticky after it; conservative only (no wrong allow)",
+      "today_reachable": true,
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/run_plain.log"
+    },
+    {
+      "id": "F3",
+      "severity": "info",
+      "contract": "B02/B03",
+      "title": "frz_op body, defer_try/defer_q, sdx_decide/sd_finish and fusion planning were not executed; source anchors only",
+      "anchor": "dm/gfx/nvn/nvn_mtl.m:7406,5026,5062,5080,4516,4590-4605",
+      "reproducer": "n/a (SKIP)",
+      "expected": "n/a",
+      "actual": "n/a",
+      "today_reachable": true,
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/static_checks.json"
+    },
+    {
+      "id": "F4",
+      "severity": "inherited",
+      "contract": "B01-B06",
+      "title": "V001 F1-F4 still apply: mode-toggle depth leak, dead BAD_KIND, size!=boundary, duplicated sticky guard; model/consumer/leave guard unchanged",
+      "anchor": "dm/gfx/nvn/nvn_mtl.m:7738 (leave), hle_nvn.c (1 definition of dm_tf_diag_set_mode, no call)",
+      "reproducer": "v001 validator probes (same code)",
+      "expected": "unchanged",
+      "actual": "unchanged",
+      "today_reachable": false,
+      "evidence": "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v002/validator/evidence/identity.json"
+    }
+  ],
+  "runs": {
+    "plain": {
+      "exit": 1,
+      "pass": 31,
+      "fail": 1,
+      "note": "the single FAIL is the intended B04 contract case"
+    },
+    "asan_ubsan": {
+      "exit": 1,
+      "pass": 31,
+      "fail": 1,
+      "note": "same result, no sanitizer diagnostics"
+    },
+    "static_checks": {
+      "pass": 20,
+      "fail": 0
+    },
+    "mutations": {
+      "caught": "3/3",
+      "all_compile_rc_0": true
+    }
+  },
+  "harness_disclosure": {
+    "extracted_verbatim": [
+      "nvn_tf_diag.h",
+      "nvn_obj.h 95-104,115",
+      "nvn_mtl.m 35-44",
+      "nvn_mtl.m 4055-4058",
+      "nvn_mtl.m 4059-4081",
+      "nvn_mtl.m 4129-4155",
+      "nvn_mtl.m 7725-7755"
+    ],
+    "written_by_verifier": [
+      "arena stream builders",
+      "minimal ds_st stub",
+      "two caller patterns transcribed from fuse_try/pso_predict_rest"
+    ],
+    "not_full_mtl_exec": true,
+    "not_a_gpu_or_metal_test": true
+  },
+  "route": "NO-GO (A2b CPU checks do not upgrade TF/NVN/GPU semantics)",
+  "freeze": {
+    "state": "frozen awaiting review",
+    "no_commit_or_push": true,
+    "candidate_untouched": true
+  }
+}

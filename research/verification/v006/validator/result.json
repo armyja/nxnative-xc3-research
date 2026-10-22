@@ -1,0 +1,148 @@
+{
+  "task": "V006",
+  "role": "independent verifier",
+  "generated_at": "2026-10-22T11:51:01",
+  "candidate": {
+    "manifest_sha256": "112f832d774f246391b1d25e5b7eea588eff95184ae8234fb727ec0501750720",
+    "files": 22,
+    "all_files_match": true,
+    "host_sha256": "931a241f60e2bd1d3f7c672c817b163972e6ecccfd7128607053698f6a3d12b3",
+    "source_identity": "four sources equal V005 (checked by manifest source_checks and re-hashed)"
+  },
+  "items": [
+    {
+      "id": "V6.1",
+      "status": "PASS",
+      "what": "22/22 manifest SHAs match; host SHA matches the required value; source identity equals V005; host never executed (static only)"
+    },
+    {
+      "id": "V6.2",
+      "status": "FAIL",
+      "what": "real CPU chain (TfIntentChain + supervisor Matcher): baseline _b chain completes, but the supervisor entry crashes afterwards",
+      "minimal_counterexample": "python3 tests/sup.py S1: [kd] _b + gs-res hit + tf-intent _b -> chain hit, then KeyError sf.hdr['pass_'] -> exit 1, no stop.json",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v006/validator/logs/sup.log"
+      ]
+    },
+    {
+      "id": "V6.3",
+      "status": "FAIL",
+      "what": "negatives mostly rejected; three defects found (attr header break, bare PS rejection, depth i32 overflow accepted)",
+      "minimal_counterexamples": [
+        "[kd] F... header followed by production '[kd]   attr 0 format ...' -> terminal 'duplicate [kd] header'",
+        "bare normal-target PS (ps_style=bare) -> 'tf-intent parse/validate: ps token'",
+        "depth=2147483648 -> chain hit (i32 overflow accepted)"
+      ],
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v006/validator/evidence/chain.json",
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v006/validator/logs/chain.log"
+      ]
+    },
+    {
+      "id": "V6.4",
+      "status": "PARTIAL",
+      "what": "synthetic child through the real supervisor entry: correct-record path, no-record exit, evidence-write failure, dump priority",
+      "detail": {
+        "pass": [
+          "no record -> validated=0",
+          "evidence write failure reported as evidence-write-failed",
+          "dump-after-hit injection reached the dump branch"
+        ],
+        "fail": [
+          "hit path crashes before stop/coverage (same F1)"
+        ]
+      },
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v006/validator/evidence/sup.json"
+      ]
+    },
+    {
+      "id": "V6.5",
+      "status": "PASS (static/mock)",
+      "what": "launcher/preflight static contract: interpreter argv, DM_NVN_TF_DIAG=1, 2800/10/180, forbidden env, absolute+non-existing run, no run dir by default; LogTail partial line",
+      "finding": "SSD constraint is not enforced (no device/df check)",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v006/validator/evidence/rest.json"
+      ]
+    },
+    {
+      "id": "V6.6",
+      "status": "PASS",
+      "what": "two behavioral mutations on validator copies (import OK, tests fail): dropping association checks -> 7 failures; treating gs HIT as terminal -> 12 failures",
+      "evidence": [
+        "/path/to/external-drive/xc3/work/experiments/tf-diag-verification/v006/validator/evidence/rest.json"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "V006.F1",
+      "severity": "high",
+      "title": "supervisor evidence writer uses non-existent header keys (pass_/fs/count) and crashes on any chain with a header",
+      "anchor": "candidate/plan/supervise_tfintent.py:285 (sf.hdr['pass_'],['fs'],['count']) vs gsres_parser_base.parse_kd keys (pass_counter/ps/vertices)",
+      "reproducer": "python3 tests/sup.py",
+      "expected": "chain hit -> stop.json/coverage.txt written, success=1",
+      "actual": "KeyError -> exit 1, no stop.json"
+    },
+    {
+      "id": "V006.F2",
+      "severity": "high",
+      "title": "production [kd] attr/stream sub-lines terminate the chain as 'duplicate [kd] header'",
+      "anchor": "candidate/plan/supervise_tfintent.py:101-110 + gsres_parser_base.py:332-334; production emits the sub-lines at nvn_mtl.m:5699-5700",
+      "reproducer": "tests/chain.py C7",
+      "expected": "sub-lines ignored, chain completes",
+      "actual": "terminal invalid"
+    },
+    {
+      "id": "V006.F3",
+      "severity": "medium",
+      "title": "bare normal-target PS is rejected by the tf-intent parser, so a normal bare-PS chain cannot complete",
+      "anchor": "tfintent_parser.py:83-84 ('ps token' requires _b/_bf) vs reviewed gsres contract 'bare/_b normal'",
+      "reproducer": "tests/chain.py C6",
+      "expected": "hit",
+      "actual": "invalid (ps token)"
+    },
+    {
+      "id": "V006.F4",
+      "severity": "low",
+      "title": "tf-intent depth accepts values outside i32",
+      "anchor": "tfintent_parser.py RE_INTENT depth group + int() with no bound",
+      "reproducer": "C12",
+      "expected": "reject 2147483648",
+      "actual": "hit"
+    },
+    {
+      "id": "V006.F5",
+      "severity": "medium",
+      "title": "launcher does not enforce the SSD constraint it documents",
+      "anchor": "launcher.py --run check (isabs + not exists only)",
+      "reproducer": "tests/rest.py L6",
+      "expected": "non-SSD path refused",
+      "actual": "no device/df validation"
+    }
+  ],
+  "runs": {
+    "chain": {
+      "cases": 21,
+      "fail": 3
+    },
+    "sup": {
+      "cases": 5,
+      "fail": 3
+    },
+    "rest": {
+      "cases": 9,
+      "fail": 0
+    },
+    "mutations": {
+      "caught": 2
+    }
+  },
+  "limits": [
+    "host never executed; host compile log/build.env/compileline only statically inspected",
+    "gate used --gate-secs 0 with --test-inject synthetic-sampler (no real sysctl/vm_stat/ps); full 180 s not covered",
+    "real dump contents, two synthetic exempt dumps, sampling-error/timeout injections, preflight execution (static only) SKIP",
+    "route NO-GO; no candidate pass"
+  ],
+  "route": "NO-GO"
+}
